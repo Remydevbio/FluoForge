@@ -130,6 +130,7 @@ window.addEventListener('DOMContentLoaded', () => {
   });
 
   // ---- undo/redo ----
+  document.getElementById('btn-duplicate').addEventListener('click', MFC.duplicateSelection);
   document.getElementById('btn-undo').addEventListener('click', MFC.undo);
   document.getElementById('btn-redo').addEventListener('click', MFC.redo);
 
@@ -192,6 +193,7 @@ window.addEventListener('DOMContentLoaded', () => {
   document.getElementById('crop-mode-square').addEventListener('click', () => MFC.setCropAspectMode('square'));
 
   // ---- shape panel ----
+  document.querySelectorAll('[data-shape-kind]').forEach(b => b.addEventListener('click', () => MFC.setShapeKind(b.dataset.shapeKind)));
   document.getElementById('shape-mode-rect').addEventListener('click', () => MFC.setShapeAspectMode('rect'));
   document.getElementById('inset-mode-square').addEventListener('click', () => MFC.setInsetAspectMode('square'));
   document.getElementById('inset-mode-rect').addEventListener('click', () => MFC.setInsetAspectMode('rect'));
@@ -343,6 +345,7 @@ window.addEventListener('DOMContentLoaded', () => {
     const ctrl = e.ctrlKey || e.metaKey;
     if (ctrl && e.key.toLowerCase() === 'z' && !e.shiftKey) { e.preventDefault(); MFC.undo(); }
     else if (ctrl && (e.key.toLowerCase() === 'y' || (e.key.toLowerCase() === 'z' && e.shiftKey))) { e.preventDefault(); MFC.redo(); }
+    else if (ctrl && e.key.toLowerCase() === 'd') { e.preventDefault(); MFC.duplicateSelection(); }
     else if (ctrl && e.key.toLowerCase() === 'c') { MFC.copySelection(); }
     else if (ctrl && e.key.toLowerCase() === 'v') { MFC.pasteSelection(); }
     else if (ctrl && e.key.toLowerCase() === 'g' && e.shiftKey) { e.preventDefault(); MFC.ungroupSelection(); }

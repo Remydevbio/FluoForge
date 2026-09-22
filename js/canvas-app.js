@@ -28,7 +28,7 @@ const MFC = (function () {
   };
 
   let canvas;                       // fabric.Canvas
-  const MFC_VERSION = '0.18';
+  const MFC_VERSION = '0.19';
   function getAppVersion() { return MFC_VERSION; }
 
   let docProps = { name: 'Untitled Figure', width: 1748, height: 1240, unit: 'px', dpi: 300 }; // A4-ish default @300dpi
@@ -43,11 +43,20 @@ const MFC = (function () {
     return canvas.getObjects().filter(o => !o.mfcIsPageBounds).map(o => serializeObjectState(o));
   }
 
+  function objectCanvasState(o) {
+    if (!o.group || o.group.type !== 'activeSelection')
+      return { left:o.left, top:o.top, scaleX:o.scaleX, scaleY:o.scaleY, angle:o.angle };
+    const matrix = o.calcTransformMatrix();
+    const origin = fabric.util.transformPoint(new fabric.Point(-o.width/2,-o.height/2),matrix);
+    const d = fabric.util.qrDecompose(matrix);
+    return { left:origin.x, top:origin.y, scaleX:d.scaleX, scaleY:d.scaleY, angle:d.angle };
+  }
+
   function serializeObjectState(o) {
+    const position = objectCanvasState(o);
     const base = {
       id: o.mfcId, type: o.mfcType || o.type,
-      left: o.left, top: o.top, scaleX: o.scaleX, scaleY: o.scaleY,
-      angle: o.angle, width: o.width, height: o.height,
+      ...position, width: o.width, height: o.height,
       cropX: o.cropX || 0, cropY: o.cropY || 0,
       visible: o.visible !== false, locked: !!o.mfcLocked
     };
@@ -71,6 +80,7 @@ const MFC = (function () {
       base.styles = JSON.parse(JSON.stringify(o.styles || {}));
       base.fontFamily = o.fontFamily; base.fontSize = o.fontSize; base.fill = o.fill;
       base.backgroundColor = o.backgroundColor; base.textAlign = o.textAlign;
+      base.fontWeight = o.fontWeight; base.fontStyle = o.fontStyle; base.underline = o.underline; base.opacity = o.opacity; base.padding = o.padding;
       base.mfcBorderWidth = o.mfcBorderWidth || 0; base.mfcBorderColor = o.mfcBorderColor || '#000000';
     } else if (o.type === 'rect' && o.mfcType === 'shape') {
       base.stroke = o.stroke; base.strokeWidth = o.strokeWidth;
@@ -82,7 +92,7 @@ const MFC = (function () {
       // none of these embed large pixel payloads in their toObject() output.
       base.fabricJSON = o.toObject([
         'mfcId', 'mfcType', 'mfcAttachedTo', 'mfcCorner', 'mfcMarginPct',
-        'mfcInsetSourceId', 'mfcInsetTargetId', 'mfcRelX', 'mfcRelY', 'mfcRelW', 'mfcRelH'
+        'mfcInsetSourceId', 'mfcInsetTargetId', 'mfcRelX', 'mfcRelY', 'mfcRelW', 'mfcRelH', 'mfcCropX', 'mfcCropY', 'mfcCropW', 'mfcCropH', 'mfcShapeKind', 'mfcLengthUm'
       ]);
     }
     return base;
@@ -118,7 +128,8 @@ const MFC = (function () {
     if (s.type === 'textbox' || s.type === 'text') {
       const t = new fabric.Textbox(s.text || '', {
         fontFamily: s.fontFamily, fontSize: s.fontSize, fill: s.fill, styles: s.styles,
-        backgroundColor: s.backgroundColor || '', textAlign: s.textAlign || 'left'
+        backgroundColor: s.backgroundColor || '', textAlign: s.textAlign || 'left',
+        fontWeight: s.fontWeight, fontStyle: s.fontStyle, underline: s.underline, opacity: s.opacity, padding: s.padding
       });
       t.mfcId = s.id; t.mfcType = 'text';
       t.mfcBorderWidth = s.mfcBorderWidth || 0; t.mfcBorderColor = s.mfcBorderColor || '#000000';
@@ -146,12 +157,15 @@ const MFC = (function () {
         if (j.mfcAttachedTo) o.mfcAttachedTo = j.mfcAttachedTo;
         if (j.mfcCorner) o.mfcCorner = j.mfcCorner;
         if (j.mfcMarginPct != null) o.mfcMarginPct = j.mfcMarginPct;
+        if (j.mfcLengthUm != null) o.mfcLengthUm = j.mfcLengthUm;
+        if (j.mfcShapeKind) { o.mfcShapeKind = j.mfcShapeKind; installCurveControls(o); }
         if (j.mfcInsetSourceId) o.mfcInsetSourceId = j.mfcInsetSourceId;
         if (j.mfcInsetTargetId) o.mfcInsetTargetId = j.mfcInsetTargetId;
         if (j.mfcRelX != null) o.mfcRelX = j.mfcRelX;
         if (j.mfcRelY != null) o.mfcRelY = j.mfcRelY;
         if (j.mfcRelW != null) o.mfcRelW = j.mfcRelW;
         if (j.mfcRelH != null) o.mfcRelH = j.mfcRelH;
+        for (const key of ['mfcCropX','mfcCropY','mfcCropW','mfcCropH']) if (j[key] != null) o[key] = j[key];
         resolve(o);
       });
     });
@@ -196,12 +210,18 @@ const MFC = (function () {
       }
       if (o.type === 'textbox') {
         o.set({ text: s.text, styles: s.styles, fontFamily: s.fontFamily, fontSize: s.fontSize, fill: s.fill,
-                backgroundColor: s.backgroundColor, textAlign: s.textAlign || 'left' });
+                backgroundColor: s.backgroundColor, textAlign: s.textAlign || 'left',
+                fontWeight: s.fontWeight, fontStyle: s.fontStyle, underline: s.underline, opacity: s.opacity, padding: s.padding });
         o.mfcBorderWidth = s.mfcBorderWidth || 0; o.mfcBorderColor = s.mfcBorderColor || '#000000';
         o.initDimensions && o.initDimensions();
       }
       if (o.type === 'rect' && o.mfcType === 'shape') {
         o.set({ stroke: s.stroke, strokeWidth: s.strokeWidth, fill: s.fill, strokeDashArray: s.strokeDashArray });
+      }
+      if (o.type === 'path' && s.fabricJSON) {
+        o._setPath(s.fabricJSON.path);
+        o.set({ stroke: s.fabricJSON.stroke, strokeWidth: s.fabricJSON.strokeWidth,
+          strokeDashArray: s.fabricJSON.strokeDashArray, fill: s.fabricJSON.fill });
       }
       o.setCoords();
     }
@@ -250,6 +270,8 @@ const MFC = (function () {
         obj.setCoords();
         refreshTextPanel();
       }
+      if (obj && obj.type === 'activeSelection') obj.getObjects().forEach(o => { if (o.mfcType === 'mfcImage') syncAttachments(o); });
+      else if (obj && obj.mfcType === 'mfcImage') syncAttachments(obj);
       pushHistory();
     });
     canvas.on('selection:created', onSelectionChanged);
@@ -265,10 +287,10 @@ const MFC = (function () {
     canvas.on('object:moving', (e) => {
       if (!e.target || e.target === cropRect) return;
       if (!(e.e && e.e.altKey)) snapObjectPosition(e.target); // hold Alt to move freely without snapping
-      if (e.target.mfcType === 'mfcImage') { repositionAttachedScaleBars(e.target); followSourceImage(e.target); }
+      if (e.target.mfcType === 'mfcImage') { syncAttachments(e.target); }
       if (e.target.mfcType === 'insetContour') syncInsetFromContour(e.target);
       if (e.target.type === 'activeSelection') {
-        e.target.getObjects().forEach(o => { if (o.mfcType === 'mfcImage') { repositionAttachedScaleBars(o); followSourceImage(o); } });
+        e.target.getObjects().forEach(o => { if (o.mfcType === 'mfcImage') syncAttachments(o); });
       }
     });
 
@@ -306,7 +328,7 @@ const MFC = (function () {
         obj.scaleX = s; obj.scaleY = s;
       }
 
-      if (obj.mfcType === 'mfcImage') { updateScaleBarsForImage(obj); followSourceImage(obj); }
+      if (obj.mfcType === 'mfcImage') { syncAttachments(obj); }
       if (obj.mfcType === 'insetContour') syncInsetFromContour(obj);
       refreshObjectSizePanel();
       if (obj.type === 'textbox') refreshTextPanel();
@@ -750,7 +772,7 @@ const MFC = (function () {
     canvas.requestRenderAll();
     canvas.fire('object:modified', { target: active });
     refreshObjectSizePanel();
-    if (active.mfcType === 'mfcImage') repositionAttachedScaleBars(active);
+    if (active.mfcType === 'mfcImage') syncAttachments(active);
   }
 
   function setObjectAngle(deg) {
@@ -760,7 +782,7 @@ const MFC = (function () {
     active.setCoords();
     canvas.requestRenderAll();
     canvas.fire('object:modified', { target: active });
-    if (active.mfcType === 'mfcImage') repositionAttachedScaleBars(active);
+    if (active.mfcType === 'mfcImage') syncAttachments(active);
   }
 
   function applyObjectSizeFromFields() {
@@ -797,7 +819,7 @@ const MFC = (function () {
 
     document.getElementById('text-font').value = active.fontFamily || 'Arial';
     document.getElementById('text-size').value = Math.round(active.fontSize || 24);
-    document.getElementById('text-color').value = /^#/.test(active.fill) ? active.fill : '#ffffff';
+    document.getElementById('text-color').value = /^#/.test(active.fill) ? active.fill : '#000000';
     const hasBg = active.backgroundColor && /^#/.test(active.backgroundColor);
     document.getElementById('text-bg-enabled').checked = !!hasBg;
     document.getElementById('text-bg-color').value = hasBg ? active.backgroundColor : '#000000';
@@ -1133,18 +1155,13 @@ const MFC = (function () {
       return;
     }
 
-    const srcBox = srcImg.getBoundingRect(true);
-    const cBox = contourRect.getBoundingRect(true);
-    // Clamp the outline to the source image's current bounds, in case it was dragged
-    // partly outside the image.
-    const clLeft = Math.max(cBox.left, srcBox.left), clTop = Math.max(cBox.top, srcBox.top);
-    const clRight = Math.min(cBox.left + cBox.width, srcBox.left + srcBox.width);
-    const clBottom = Math.min(cBox.top + cBox.height, srcBox.top + srcBox.height);
-    const w = Math.max(1, clRight - clLeft), h = Math.max(1, clBottom - clTop);
-
-    const cropX = srcImg.cropX + (clLeft - srcBox.left) / srcImg.scaleX;
-    const cropY = srcImg.cropY + (clTop - srcBox.top) / srcImg.scaleY;
-    const cropW = w / srcImg.scaleX, cropH = h / srcImg.scaleY;
+    // The contour stores its source region in source-image pixel coordinates.
+    syncInsetFromContour(contourRect);
+    const srcBox = canvasBounds(srcImg);
+    const cropX = contourRect.mfcCropX, cropY = contourRect.mfcCropY;
+    const cropW = contourRect.mfcCropW, cropH = contourRect.mfcCropH;
+    const w = cropW * srcBox.width / srcImg.width;
+    const h = cropH * srcBox.height / srcImg.height;
 
     let insetImg = contourRect.mfcInsetTargetId
       ? canvas.getObjects().find(o => o.mfcId === contourRect.mfcInsetTargetId) : null;
@@ -1152,7 +1169,9 @@ const MFC = (function () {
     if (insetImg) {
       // Already linked — "Create inset" becomes "update now" (same effect as a
       // move/resize sync, just triggered manually).
-      insetImg.set({ cropX, cropY, width: cropW, height: cropH });
+      const displayW = insetImg.getScaledWidth(), displayH = insetImg.getScaledHeight();
+      insetImg.set({ cropX, cropY, width: cropW, height: cropH,
+        scaleX: displayW/cropW, scaleY: displayH/cropH });
       insetImg.setCoords();
       canvas.requestRenderAll();
       pushHistory();
@@ -1193,62 +1212,74 @@ const MFC = (function () {
     MFC_UI.toast('Inset created — move/resize it freely; adjust the yellow outline on the original to change what it shows.');
   }
 
-  /** Keeps a linked inset's crop *window* matching its contour rectangle's current position/size on the source image. Never touches the inset's own on-screen size/position — only which pixels it displays. */
-  /** Keeps a linked inset's crop *window* matching its contour rectangle's current position/size on the source image. Never touches the inset's own on-screen size/position — only which pixels it displays. Also records the outline's position as fractions of the source image's bounds, so followSourceImage() can keep the outline anchored to the same region if the *source* is later moved or resized. */
-  function syncInsetFromContour(contourRect) {
-    const srcImg = canvas.getObjects().find(o => o.mfcId === contourRect.mfcInsetSourceId);
-    if (!srcImg) return;
+  // Canvas bounds include an ActiveSelection's transform; child left/top alone do not.
+  function canvasCorners(obj) {
+    const m = obj.calcTransformMatrix();
+    return [[-obj.width/2,-obj.height/2],[obj.width/2,-obj.height/2],
+      [obj.width/2,obj.height/2],[-obj.width/2,obj.height/2]]
+      .map(([x,y]) => fabric.util.transformPoint(new fabric.Point(x,y), m));
+  }
 
-    const srcBox = srcImg.getBoundingRect(true);
-    const cBox = contourRect.getBoundingRect(true);
-    const clLeft = Math.max(cBox.left, srcBox.left), clTop = Math.max(cBox.top, srcBox.top);
-    const clRight = Math.min(cBox.left + cBox.width, srcBox.left + srcBox.width);
-    const clBottom = Math.min(cBox.top + cBox.height, srcBox.top + srcBox.height);
-    const w = Math.max(1, clRight - clLeft), h = Math.max(1, clBottom - clTop);
+  function canvasBounds(obj) {
+    const corners = canvasCorners(obj);
+    const xs = corners.map(p => p.x), ys = corners.map(p => p.y);
+    return { left: Math.min(...xs), top: Math.min(...ys),
+      width: Math.max(...xs)-Math.min(...xs), height: Math.max(...ys)-Math.min(...ys) };
+  }
 
-    contourRect.mfcRelX = (clLeft - srcBox.left) / srcBox.width;
-    contourRect.mfcRelY = (clTop - srcBox.top) / srcBox.height;
-    contourRect.mfcRelW = w / srcBox.width;
-    contourRect.mfcRelH = h / srcBox.height;
-
-    if (!contourRect.mfcInsetTargetId) return; // outline drawn but no inset created yet
-    const insetImg = canvas.getObjects().find(o => o.mfcId === contourRect.mfcInsetTargetId);
-    if (!insetImg) return;
-
-    insetImg.set({
-      cropX: srcImg.cropX + (clLeft - srcBox.left) / srcImg.scaleX,
-      cropY: srcImg.cropY + (clTop - srcBox.top) / srcImg.scaleY,
-      width: w / srcImg.scaleX,
-      height: h / srcImg.scaleY
+  function syncInsetFromContour(contour) {
+    const src = canvas.getObjects().find(o => o.mfcId === contour.mfcInsetSourceId);
+    if (!src) return;
+    const inverse = fabric.util.invertTransform(src.calcTransformMatrix());
+    const local = canvasCorners(contour).map(pt => fabric.util.transformPoint(pt, inverse));
+    const xs = local.map(pt => pt.x + src.width/2);
+    const ys = local.map(pt => pt.y + src.height/2);
+    const left = Math.max(0, Math.min(...xs)), top = Math.max(0, Math.min(...ys));
+    const right = Math.min(src.width, Math.max(...xs));
+    const bottom = Math.min(src.height, Math.max(...ys));
+    contour.mfcCropX = src.cropX + left;
+    contour.mfcCropY = src.cropY + top;
+    contour.mfcCropW = Math.max(1, right-left);
+    contour.mfcCropH = Math.max(1, bottom-top);
+    contour.mfcRelX = left/src.width;
+    contour.mfcRelY = top/src.height;
+    contour.mfcRelW = contour.mfcCropW/src.width;
+    contour.mfcRelH = contour.mfcCropH/src.height;
+    canvas.getObjects().filter(o => o.mfcIsInset && o.mfcInsetContourId === contour.mfcId).forEach(inset => {
+      const displayW = inset.getScaledWidth(), displayH = inset.getScaledHeight();
+      inset.set({ cropX: contour.mfcCropX, cropY: contour.mfcCropY,
+        width: contour.mfcCropW, height: contour.mfcCropH,
+        scaleX: displayW / contour.mfcCropW, scaleY: displayH / contour.mfcCropH });
+      inset.setCoords();
     });
-    insetImg.setCoords();
     canvas.requestRenderAll();
   }
 
-  /** Keeps any inset outline(s) drawn on srcImg anchored to the same region of it when srcImg itself is moved or resized (the reverse direction of syncInsetFromContour, which handles the outline moving). Rotating the source is not tracked — only move/resize. */
-  function followSourceImage(srcImg) {
-    if (!srcImg || srcImg.mfcType !== 'mfcImage') return;
-    const contours = canvas.getObjects().filter(o =>
-      o.mfcType === 'insetContour' && o.mfcInsetSourceId === srcImg.mfcId && o.mfcRelX != null);
-    if (!contours.length) return;
-    const srcBox = srcImg.getBoundingRect(true);
-    contours.forEach(contour => {
-      const newW = contour.mfcRelW * srcBox.width;
-      const newH = contour.mfcRelH * srcBox.height;
-      contour.set({
-        left: srcBox.left + contour.mfcRelX * srcBox.width,
-        top: srcBox.top + contour.mfcRelY * srcBox.height,
-        scaleX: newW / contour.width,
-        scaleY: newH / contour.height
-      });
+  function followSourceImage(src) {
+    const matrix = src.calcTransformMatrix();
+    const d = fabric.util.qrDecompose(matrix);
+    canvas.getObjects().filter(o => o.mfcType === 'insetContour' &&
+      o.mfcInsetSourceId === src.mfcId && o.mfcCropX != null).forEach(contour => {
+      if (contour.group && contour.group.type === 'activeSelection') return;
+      const localX = contour.mfcCropX-src.cropX-src.width/2;
+      const localY = contour.mfcCropY-src.cropY-src.height/2;
+      const origin = fabric.util.transformPoint(new fabric.Point(localX,localY),matrix);
+      contour.set({ left: origin.x, top: origin.y, angle: d.angle,
+        scaleX: contour.mfcCropW*d.scaleX/contour.width,
+        scaleY: contour.mfcCropH*d.scaleY/contour.height });
       contour.setCoords();
-      syncInsetFromContour(contour); // keep the linked inset's crop window in sync too
     });
     canvas.requestRenderAll();
+  }
+
+  function syncAttachments(img) {
+    updateScaleBarsForImage(img);
+    followSourceImage(img);
   }
 
   // ---- shape tool (rectangle/square, drag-to-draw) ----
   let shapeDrag = null; // { rect, startX, startY }
+  let shapeKind = 'rect';
 
   function readShapeFormValues() {
     const dashKey = document.getElementById('shape-dash').value;
@@ -1261,8 +1292,60 @@ const MFC = (function () {
     };
   }
 
+  function setShapeKind(kind) {
+    shapeKind = kind;
+    document.querySelectorAll('[data-shape-kind]').forEach(b => b.classList.toggle('active', b.dataset.shapeKind === kind));
+  }
+
+  function pathForDrag(kind, x1, y1, x2, y2) {
+    if (kind === 'line') return `M ${x1} ${y1} L ${x2} ${y2}`;
+    if (kind === 'polyline') return `M ${x1} ${y1} L ${x2} ${y1} L ${x2} ${y2}`;
+    return `M ${x1} ${y1} Q ${(x1+x2)/2} ${Math.min(y1,y2)-Math.max(30,Math.abs(y2-y1)/2)} ${x2} ${y2}`;
+  }
+
+  function installCurveControls(path) {
+    if (path.mfcShapeKind !== 'curve') return;
+    const index = { start: [0,1], control: [1,1], end: [1,3] };
+    path.controls = {};
+    Object.entries(index).forEach(([name,[row,col]]) => {
+      path.controls[name] = new fabric.Control({
+        cursorStyle: 'crosshair', cornerSize: 11,
+        positionHandler: (_dim, _matrix, obj) => {
+          const pt = new fabric.Point(obj.path[row][col]-obj.pathOffset.x,
+            obj.path[row][col+1]-obj.pathOffset.y);
+          return fabric.util.transformPoint(pt, fabric.util.multiplyTransformMatrices((obj.canvas ? obj.canvas.viewportTransform : fabric.iMatrix),obj.calcTransformMatrix()));
+        },
+        actionHandler: (_evt, transform, x, y) => {
+          const obj = transform.target;
+          const inverse = fabric.util.invertTransform(fabric.util.multiplyTransformMatrices((obj.canvas ? obj.canvas.viewportTransform : fabric.iMatrix),obj.calcTransformMatrix()));
+          const local = fabric.util.transformPoint(new fabric.Point(x,y),inverse);
+          const center = obj.getCenterPoint();
+          const commands = obj.path.map(part => part.slice());
+          commands[row][col] = local.x + obj.pathOffset.x;
+          commands[row][col+1] = local.y + obj.pathOffset.y;
+          obj._setPath(commands);
+          obj.setPositionByOrigin(center,'center','center');
+          obj.setCoords(); obj.dirty = true;
+          return true;
+        }
+      });
+    });
+  }
+
   function startShapeDrag(pointer, evt) {
     const style = readShapeFormValues();
+    if (shapeKind !== 'rect') {
+      const path = new fabric.Path(pathForDrag(shapeKind,pointer.x,pointer.y,pointer.x+1,pointer.y+1), {
+        stroke: style.stroke, strokeWidth: style.strokeWidth, strokeDashArray: style.strokeDashArray,
+        fill: 'transparent', strokeUniform: true, perPixelTargetFind: false,
+        cornerStyle: 'circle', transparentCorners: false, cornerColor: '#5b8cff', borderColor: '#5b8cff'
+      });
+      path.mfcId = 'shp' + (nextId++); path.mfcType = 'shape'; path.mfcShapeKind = shapeKind;
+      installCurveControls(path);
+      canvas.add(path);
+      shapeDrag = { rect: path, startX: pointer.x, startY: pointer.y, kind: shapeKind };
+      return;
+    }
     const rect = new fabric.Rect({
       left: pointer.x, top: pointer.y, width: 1, height: 1,
       stroke: style.stroke, strokeWidth: style.strokeWidth, strokeDashArray: style.strokeDashArray,
@@ -1296,6 +1379,12 @@ const MFC = (function () {
     }
     if (!shapeDrag) return;
     const p = canvas.getPointer(opt.e);
+    if (shapeDrag.kind) {
+      const obj = shapeDrag.rect;
+      obj._setPath(pathForDrag(shapeDrag.kind,shapeDrag.startX,shapeDrag.startY,p.x,p.y));
+      obj.setCoords(); obj.dirty = true; canvas.requestRenderAll();
+      return;
+    }
     let w = p.x - shapeDrag.startX;
     let h = p.y - shapeDrag.startY;
     const square = shapeAspectMode === 'square' || opt.e.shiftKey;
@@ -1334,10 +1423,14 @@ const MFC = (function () {
     if (!shapeDrag) return;
     const rect = shapeDrag.rect;
     // treat a near-zero drag (a simple click) as "place a default-sized shape here"
-    if (rect.width < 5 && rect.height < 5) {
+    if (!shapeDrag.kind && rect.width < 5 && rect.height < 5) {
       rect.set({ width: 150, height: shapeAspectMode === 'square' ? 150 : 100 });
       rect.setCoords();
       canvas.requestRenderAll();
+    }
+    if (shapeDrag.kind && rect.width < 5 && rect.height < 5) {
+      rect._setPath(pathForDrag(shapeDrag.kind,shapeDrag.startX,shapeDrag.startY,shapeDrag.startX+150,shapeDrag.startY+80));
+      rect.setCoords();
     }
     shapeDrag = null;
     canvas.setActiveObject(rect);
@@ -1535,6 +1628,9 @@ const MFC = (function () {
       MFC_UI.toast('Select 2 or more images first to batch-apply a scale bar.');
       return;
     }
+    // Release the transient selection so image coordinates become document coordinates
+    // before bars are created and attached.
+    canvas.discardActiveObject();
     const { lengthUm, thickness, color, showLabel } = readScaleBarFormValues();
     const refSelectEl = document.getElementById('sb-ref-image');
     const created = [];
@@ -1606,7 +1702,7 @@ const MFC = (function () {
     if (!imgObj || imgObj.mfcType !== 'mfcImage') return;
     const bars = canvas.getObjects().filter(o => o.mfcType === 'scalebar' && o.mfcAttachedTo === imgObj.mfcId && o.mfcCorner);
     if (!bars.length) return;
-    const b = imgObj.getBoundingRect(true);
+    const b = canvasBounds(imgObj);
     bars.forEach(bar => {
       const barW = bar.getScaledWidth(), barH = bar.getScaledHeight();
       const mx = b.width * (bar.mfcMarginPct != null ? bar.mfcMarginPct : 5) / 100;
@@ -1618,6 +1714,7 @@ const MFC = (function () {
         case 'top-left':    left = b.left + mx; top = b.top + my; break;
         default:             left = b.left + b.width - barW - mx; top = b.top + b.height - barH - my; // bottom-right
       }
+      if (bar.group && bar.group.type === 'activeSelection') return;
       bar.set({ left, top });
       bar.setCoords();
     });
@@ -1675,12 +1772,14 @@ const MFC = (function () {
     const active = canvas.getActiveObject();
     if (!active || active === cropRect) return;
     active.set({ left: active.left + dx, top: active.top + dy });
-    if (snap) snapObjectPosition(active);
+    // Keyboard steps must pass through snap lines; snapping a 1px nudge can
+    // otherwise cancel the same movement forever. Mouse dragging still snaps.
+    if (snap && (Math.abs(dx) > SNAP_THRESHOLD_SCREEN_PX || Math.abs(dy) > SNAP_THRESHOLD_SCREEN_PX)) snapObjectPosition(active);
     active.setCoords();
 
-    if (active.mfcType === 'mfcImage') repositionAttachedScaleBars(active);
+    if (active.mfcType === 'mfcImage') syncAttachments(active);
     if (active.type === 'activeSelection') {
-      active.getObjects().forEach(o => { if (o.mfcType === 'mfcImage') repositionAttachedScaleBars(o); });
+      active.getObjects().forEach(o => { if (o.mfcType === 'mfcImage') syncAttachments(o); });
     }
     canvas.requestRenderAll();
 
@@ -1695,7 +1794,7 @@ const MFC = (function () {
       const t = (o.text || '').replace(/\n/g, ' ').trim();
       return 'Text: "' + (t.length > 18 ? t.slice(0, 18) + '…' : t || '(empty)') + '"';
     }
-    if (o.mfcType === 'shape') return 'Shape';
+    if (o.mfcType === 'shape') return o.mfcShapeKind ? o.mfcShapeKind[0].toUpperCase() + o.mfcShapeKind.slice(1) : 'Shape';
     if (o.mfcType === 'scalebar') return 'Scale bar';
     if (o.mfcType === 'insetContour') return 'Inset outline';
     if (o.type === 'group') return 'Group';
@@ -1853,107 +1952,87 @@ const MFC = (function () {
 
   // ---- copy/paste ----
   let clipboardObj = null;
+  const CLONE_PROPS = ['mfcType','mfcAttachedTo','mfcCorner','mfcMarginPct','mfcLengthUm',
+    'mfcInsetSourceId','mfcInsetTargetId','mfcRelX','mfcRelY','mfcRelW','mfcRelH',
+    'mfcCropX','mfcCropY','mfcCropW','mfcCropH','mfcShapeKind','mfcBorderWidth','mfcBorderColor'];
 
-  /** Snapshot a single (non-selection) object into a clipboard-ready descriptor. Returns a Promise. */
   function copySingle(obj) {
-    if (obj.mfcType === 'mfcImage') {
-      return Promise.resolve({ kind: 'mfcImage', sourceId: obj.mfcId, props: serializeObjectState(obj) });
-    }
-    return new Promise((resolve) => {
-      obj.clone((cloned) => resolve({ kind: 'fabric', obj: cloned, isTextbox: obj.type === 'textbox' }));
-    });
+    if (obj.mfcType === 'mfcImage') return {
+      kind: 'mfcImage', sourceId: obj.mfcId, props: serializeObjectState(obj)
+    };
+    return { kind: 'fabric', sourceId: obj.mfcId, json: obj.toObject(CLONE_PROPS) };
   }
 
   function copySelection() {
-    const active = canvas.getActiveObject();
-    if (!active) return;
-
-    if (active.type === 'activeSelection') {
-      // Multiple objects selected: snapshot each one individually rather than cloning the
-      // ActiveSelection wrapper itself. ActiveSelection is a transient UI grouping fabric
-      // creates for multi-select — it isn't meant to live on the canvas as a real object.
-      // canvas.add()-ing a clone of one (the old behavior) is what caused pasted groups to
-      // turn into un-clickable, undeletable "ghost outline" objects — and since the images
-      // inside it never got their own registry entry, they'd also fail to (re)composite,
-      // which is why they could end up positioned off the visible area and stay stuck there.
-      const items = active.getObjects();
-      Promise.all(items.map(copySingle)).then((results) => { clipboardObj = { kind: 'multi', items: results }; });
-      return;
-    }
-
-    copySingle(active).then((result) => { clipboardObj = result; });
+    const selected = canvas.getActiveObjects();
+    if (!selected.length) return;
+    // ActiveSelection gives its children group-local coordinates. Release it first
+    // so every snapshot has document coordinates, then restore the UI selection.
+    const wasMulti = selected.length > 1;
+    if (wasMulti) canvas.discardActiveObject();
+    clipboardObj = selected.map(copySingle);
+    if (wasMulti) canvas.setActiveObject(new fabric.ActiveSelection(selected, { canvas }));
   }
 
-  /** Pastes one clipboard item, offset by (dx,dy). Adds it to the canvas and returns the new object (or null). Does not select it or push history. */
-  function pasteSingle(item, dx, dy) {
+  function enliven(json) {
+    return new Promise(resolve => fabric.util.enlivenObjects([json], objects => resolve(objects[0])));
+  }
+
+  async function pasteSingle(item, dx, dy) {
     if (item.kind === 'mfcImage') {
       const src = registry[item.sourceId];
       if (!src) return null;
-      // Independent copy: new registry entry with its own channel settings (on/off,
-      // color, contrast), so the two images can be edited separately from here on.
-      // The raw pixel arrays are read-only and safe to share by reference.
       const clonedRaw = { ...src.rawImage, channels: src.rawImage.channels.map(c => ({ ...c })) };
       const id = 'img' + (nextId++);
       registry[id] = { rawImage: clonedRaw, fileBase64: src.fileBase64, workingScale: src.workingScale };
       const compositeCanvas = MFC_TIFF.compositeChannels(clonedRaw, src.workingScale);
-
       const p = item.props;
-      const fabricImg = new fabric.Image(compositeCanvas, {
-        left: p.left + dx, top: p.top + dy, scaleX: p.scaleX, scaleY: p.scaleY, angle: p.angle,
-        cropX: p.cropX || 0, cropY: p.cropY || 0, width: p.width, height: p.height,
+      const img = new fabric.Image(compositeCanvas, {
+        left: p.left + dx, top: p.top + dy, scaleX: p.scaleX, scaleY: p.scaleY,
+        angle: p.angle, cropX: p.cropX, cropY: p.cropY, width: p.width, height: p.height,
         cornerStyle: 'circle', transparentCorners: false, cornerColor: '#5b8cff', borderColor: '#5b8cff'
       });
-      fabricImg.mfcId = id;
-      fabricImg.mfcType = 'mfcImage';
-      fabricImg.mfcRawWidth = clonedRaw.width;
-      fabricImg.mfcRawHeight = clonedRaw.height;
-      fabricImg.mfcFileName = clonedRaw.fileName + ' copy';
-      fabricImg.setCoords();
-      canvas.add(fabricImg);
-      return fabricImg;
+      img.mfcId = id; img.mfcType = 'mfcImage';
+      img.mfcRawWidth = clonedRaw.width; img.mfcRawHeight = clonedRaw.height;
+      img.mfcFileName = (p.mfcFileName || clonedRaw.fileName) + ' copy';
+      img.mfcIsInset = !!p.mfcIsInset;
+      img.mfcInsetContourId = p.mfcInsetContourId;
+      img.mfcInsetSourceId = p.mfcInsetSourceId;
+      img.setCoords(); canvas.add(img); return img;
     }
-
-    const cloned = item.obj;
-    cloned.set({ left: cloned.left + dx, top: cloned.top + dy, evented: true });
-    cloned.mfcId = (cloned.mfcType || 'obj') + (nextId++);
-    if (item.isTextbox) { cloned.mfcType = 'text'; attachTextListeners(cloned); }
-    if (cloned.mfcType === 'insetContour') {
-      // A pasted copy of a linked contour must not keep steering the *original*
-      // outline's inset — clone()/toObject() would otherwise carry the old
-      // mfcInsetTargetId straight over, so moving the new copy would silently also
-      // update the original's linked inset image.
-      cloned.mfcInsetTargetId = null;
-    }
-    cloned.setCoords();
-    canvas.add(cloned);
-    return cloned;
+    const obj = await enliven(item.json);
+    obj.set({ left: obj.left + dx, top: obj.top + dy, evented: true });
+    obj.mfcId = (obj.mfcType || 'obj') + (nextId++);
+    // Fabric only rehydrates registered properties. Restore app metadata explicitly.
+    CLONE_PROPS.forEach(key => { if (item.json[key] !== undefined) obj[key] = item.json[key]; });
+    if (obj.type === 'textbox') { obj.mfcType = 'text'; attachTextListeners(obj); }
+    if (obj.mfcShapeKind === 'curve') installCurveControls(obj);
+    obj.setCoords(); canvas.add(obj); return obj;
   }
 
-  function pasteSelection() {
+  async function pasteSelection() {
     if (!clipboardObj) return;
-    const OFFSET = 24;
-
-    if (canvas.getActiveObject() && canvas.getActiveObject().type === 'activeSelection') {
-      canvas.discardActiveObject();
-    }
-
-    const items = clipboardObj.kind === 'multi' ? clipboardObj.items : [clipboardObj];
-    const pasted = items.map(item => pasteSingle(item, OFFSET, OFFSET)).filter(Boolean);
+    const source = clipboardObj;
+    canvas.discardActiveObject();
+    const pasted = (await Promise.all(source.map(item => pasteSingle(item, 24, 24)))).filter(Boolean);
     if (!pasted.length) return;
+    const idMap = new Map(pasted.map((obj,i) => [source[i].sourceId, obj.mfcId]));
+    pasted.forEach(obj => {
+      if (idMap.has(obj.mfcAttachedTo)) obj.mfcAttachedTo = idMap.get(obj.mfcAttachedTo);
+      if (idMap.has(obj.mfcInsetSourceId)) obj.mfcInsetSourceId = idMap.get(obj.mfcInsetSourceId);
+      if (idMap.has(obj.mfcInsetContourId)) obj.mfcInsetContourId = idMap.get(obj.mfcInsetContourId);
+      if (idMap.has(obj.mfcInsetTargetId)) obj.mfcInsetTargetId = idMap.get(obj.mfcInsetTargetId);
+      else if (obj.mfcType === 'insetContour') obj.mfcInsetTargetId = null;
+    });
+    pasted.filter(o => o.mfcType === 'mfcImage' && !o.mfcIsInset).forEach(syncAttachments);
+    canvas.setActiveObject(pasted.length === 1 ? pasted[0] : new fabric.ActiveSelection(pasted, { canvas }));
+    canvas.requestRenderAll(); pushHistory();
+    refreshChannelPanel(); refreshScaleBarRefList();
+  }
 
-    if (pasted.length === 1) {
-      canvas.setActiveObject(pasted[0]);
-    } else {
-      // Re-select the pasted objects as a fresh ActiveSelection purely to drive the
-      // on-screen multi-select UI — this one is never added to the canvas itself, only
-      // used transiently, so it doesn't hit the bug described above.
-      canvas.setActiveObject(new fabric.ActiveSelection(pasted, { canvas }));
-    }
-
-    canvas.requestRenderAll();
-    pushHistory();
-    refreshChannelPanel();
-    refreshScaleBarRefList();
+  async function duplicateSelection() {
+    copySelection();
+    await pasteSelection();
   }
 
   // ---- grid layout assistant ----
@@ -2043,7 +2122,7 @@ const MFC = (function () {
     importFiles, addImageToCanvas, recomposite, refreshChannelPanel,
     applyPixelSize, applyAlphaToggle, applyBrightnessContrast, commitBrightnessContrast, resetToneCurve,
     undo, redo, pushHistory,
-    setTool, align, copySelection, pasteSelection, nudgeSelection, refreshLayersPanel,
+    setTool, setShapeKind, installCurveControls, align, copySelection, pasteSelection, duplicateSelection, nudgeSelection, refreshLayersPanel,
     groupSelection, ungroupSelection,
     applyCrop, cancelCrop, setCropAspectMode, applyCropFieldsToRect,
     applyTextStyle, applyTextAlign, applyTextBoxSize, applyTextBorder, refreshTextPanel, attachTextListeners,
@@ -2053,7 +2132,7 @@ const MFC = (function () {
     applyShapeStyle, setShapeAspectMode, refreshShapePanel,
     createInsetFromContour, refreshInsetPanel, applyInsetContourStyle, setInsetAspectMode,
     zoomIn, zoomOut, zoomReset, updateZoomDisplay, setZoom, getZoomLevel, withDocOnlyView,
-    getRegistry, getNextIdCounter, setNextIdCounter,
+    getRegistry, getNextIdCounter, setNextIdCounter, objectCanvasState,
     get currentTool() { return currentTool; }
   };
 })();

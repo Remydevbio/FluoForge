@@ -166,8 +166,7 @@ const MFC_EXPORT = (function () {
     const objects = canvas.getObjects().filter(o => !o.mfcIsPageBounds).map(o => {
       const common = {
         mfcId: o.mfcId, mfcType: o.mfcType || o.type,
-        left: o.left, top: o.top, scaleX: o.scaleX, scaleY: o.scaleY,
-        angle: o.angle, width: o.width, height: o.height,
+        ...MFC.objectCanvasState(o), width: o.width, height: o.height,
         cropX: o.cropX || 0, cropY: o.cropY || 0
       };
       if (o.mfcType === 'mfcImage') {
@@ -197,20 +196,21 @@ const MFC_EXPORT = (function () {
         return Object.assign(common, {
           text: o.text, styles: o.styles, fontFamily: o.fontFamily, fontSize: o.fontSize, fill: o.fill,
           backgroundColor: o.backgroundColor, textAlign: o.textAlign,
+          fontWeight: o.fontWeight, fontStyle: o.fontStyle, underline: o.underline, opacity: o.opacity, padding: o.padding,
           mfcBorderWidth: o.mfcBorderWidth || 0, mfcBorderColor: o.mfcBorderColor || '#000000'
         });
       }
       if (o.mfcType === 'scalebar') {
         return Object.assign(common, {
-          fabricJSON: o.toObject(['mfcId', 'mfcType', 'mfcAttachedTo', 'mfcCorner', 'mfcMarginPct'])
+          fabricJSON: o.toObject(['mfcId', 'mfcType', 'mfcAttachedTo', 'mfcCorner', 'mfcMarginPct', 'mfcLengthUm'])
         });
       }
       if (o.mfcType === 'insetContour') {
         return Object.assign(common, {
-          fabricJSON: o.toObject(['mfcId', 'mfcType', 'mfcInsetSourceId', 'mfcInsetTargetId', 'mfcRelX', 'mfcRelY', 'mfcRelW', 'mfcRelH'])
+          fabricJSON: o.toObject(['mfcId', 'mfcType', 'mfcInsetSourceId', 'mfcInsetTargetId', 'mfcRelX', 'mfcRelY', 'mfcRelW', 'mfcRelH', 'mfcCropX', 'mfcCropY', 'mfcCropW', 'mfcCropH'])
         });
       }
-      return Object.assign(common, { fabricJSON: o.toObject(['mfcId', 'mfcType']) });
+      return Object.assign(common, { fabricJSON: o.toObject(['mfcId', 'mfcType', 'mfcShapeKind']) });
     });
 
     // manifest.json holds only lightweight metadata now — no embedded binary
@@ -414,7 +414,8 @@ const MFC_EXPORT = (function () {
           left: objDef.left, top: objDef.top, scaleX: objDef.scaleX, scaleY: objDef.scaleY,
           angle: objDef.angle, width: objDef.width, fontFamily: objDef.fontFamily,
           fontSize: objDef.fontSize, fill: objDef.fill, styles: objDef.styles,
-          backgroundColor: objDef.backgroundColor || '', textAlign: objDef.textAlign || 'left'
+          backgroundColor: objDef.backgroundColor || '', textAlign: objDef.textAlign || 'left',
+          fontWeight: objDef.fontWeight, fontStyle: objDef.fontStyle, underline: objDef.underline, opacity: objDef.opacity, padding: objDef.padding
         });
         t.mfcId = objDef.mfcId; t.mfcType = 'text';
         t.mfcBorderWidth = objDef.mfcBorderWidth || 0;
@@ -422,12 +423,15 @@ const MFC_EXPORT = (function () {
         MFC.attachTextListeners(t);
         canvas.add(t);
       } else if (objDef.fabricJSON) {
-        fabric.util.enlivenObjects([objDef.fabricJSON], (enlivened) => {
+        await new Promise(resolve => fabric.util.enlivenObjects([objDef.fabricJSON], (enlivened) => {
           const o = enlivened[0];
           o.mfcId = objDef.mfcId; o.mfcType = objDef.mfcType;
           if (objDef.fabricJSON.mfcAttachedTo) o.mfcAttachedTo = objDef.fabricJSON.mfcAttachedTo;
           if (objDef.fabricJSON.mfcCorner) o.mfcCorner = objDef.fabricJSON.mfcCorner;
           if (objDef.fabricJSON.mfcMarginPct != null) o.mfcMarginPct = objDef.fabricJSON.mfcMarginPct;
+          if (objDef.fabricJSON.mfcLengthUm != null) o.mfcLengthUm = objDef.fabricJSON.mfcLengthUm;
+          if (objDef.fabricJSON.mfcShapeKind) { o.mfcShapeKind = objDef.fabricJSON.mfcShapeKind; MFC.installCurveControls(o); }
+          for (const key of ['mfcCropX','mfcCropY','mfcCropW','mfcCropH']) if (objDef.fabricJSON[key] != null) o[key] = objDef.fabricJSON[key];
           if (objDef.fabricJSON.mfcInsetSourceId) o.mfcInsetSourceId = objDef.fabricJSON.mfcInsetSourceId;
           if (objDef.fabricJSON.mfcInsetTargetId) o.mfcInsetTargetId = objDef.fabricJSON.mfcInsetTargetId;
           if (objDef.fabricJSON.mfcRelX != null) o.mfcRelX = objDef.fabricJSON.mfcRelX;
@@ -435,7 +439,8 @@ const MFC_EXPORT = (function () {
           if (objDef.fabricJSON.mfcRelW != null) o.mfcRelW = objDef.fabricJSON.mfcRelW;
           if (objDef.fabricJSON.mfcRelH != null) o.mfcRelH = objDef.fabricJSON.mfcRelH;
           canvas.add(o);
-        });
+          resolve();
+        }));
       }
     }
     canvas.requestRenderAll();
