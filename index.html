@@ -30,6 +30,7 @@
   </div>
 
   <div class="tool-group">
+    <button id="btn-duplicate" title="Duplicate selected objects (Ctrl+D)">Duplicate</button>
     <button id="btn-undo" title="Undo (Ctrl+Z)">&#8630; Undo</button>
     <button id="btn-redo" title="Redo (Ctrl+Y)">&#8631; Redo</button>
   </div>
@@ -213,6 +214,12 @@
         <button id="shape-mode-rect" class="toggle-btn active" style="width:auto;padding:6px 10px;">Rectangle</button>
         <button id="shape-mode-square" class="toggle-btn" style="width:auto;padding:6px 10px;">Square</button>
       </div>
+      <div class="btn-row" id="shape-kinds">
+        <button data-shape-kind="rect" class="toggle-btn active">Box</button>
+        <button data-shape-kind="line" class="toggle-btn">Line</button>
+        <button data-shape-kind="polyline" class="toggle-btn">Polyline</button>
+        <button data-shape-kind="curve" class="toggle-btn">Curve</button>
+      </div>
       <label>Stroke color <input type="color" id="shape-stroke-color" value="#ffffff"></label>
       <label>Stroke width <input type="number" id="shape-stroke-width" value="3" min="0" step="1"></label>
       <label>Dash style
@@ -269,7 +276,7 @@
         </select>
       </label>
       <label>Size <input type="number" id="text-size" value="24" step="1"></label>
-      <label>Text color <input type="color" id="text-color" value="#ffffff"></label>
+      <label>Text color <input type="color" id="text-color" value="#000000"></label>
       <label>Box background
         <span style="display:flex;gap:6px;align-items:center;">
           <input type="checkbox" id="text-bg-enabled">
