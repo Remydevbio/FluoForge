@@ -448,10 +448,13 @@ const MFC_TIFF = (function () {
    * Composite channels -> an HTMLCanvasElement (8-bit RGBA), additive blend.
    * `scale` < 1 downsamples for the live-editing canvas; pass 1 for full-res export.
    */
-  function compositeChannels(imgData, scale) {
+  function compositeChannels(imgData, scale, region = null, targetWidth = null, targetHeight = null) {
     const srcW = imgData.width, srcH = imgData.height;
-    const dstW = Math.max(1, Math.round(srcW * scale));
-    const dstH = Math.max(1, Math.round(srcH * scale));
+    const area = region || { x: 0, y: 0, width: srcW, height: srcH };
+    const dstW = targetWidth || Math.max(1, Math.round(area.width * scale));
+    const dstH = targetHeight || Math.max(1, Math.round(area.height * scale));
+    const sourceX = x => Math.floor(area.x + x * area.width / dstW);
+    const sourceY = y => Math.floor(area.y + y * area.height / dstH);
 
     const canvas = document.createElement('canvas');
     canvas.width = dstW; canvas.height = dstH;
@@ -469,9 +472,10 @@ const MFC_TIFF = (function () {
       const data = ch.data;
 
       for (let y = 0; y < dstH; y++) {
-        const sy = Math.min(srcH - 1, Math.floor(y / scale));
+        const sy = sourceY(y);
         for (let x = 0; x < dstW; x++) {
-          const sx = Math.min(srcW - 1, Math.floor(x / scale));
+          const sx = sourceX(x);
+          if (sx < 0 || sy < 0 || sx >= srcW || sy >= srcH) { outData[(y * dstW + x) * 4 + 3] = 0; continue; }
           const v = data[sy * srcW + sx];
           let norm = (v - ch.min) / range;
           if (norm < 0) norm = 0; else if (norm > 1) norm = 1;
@@ -504,9 +508,10 @@ const MFC_TIFF = (function () {
     if (imgData.hasAlpha && imgData.alphaEnabled !== false && imgData.alphaData) {
       const alphaData = imgData.alphaData;
       for (let y = 0; y < dstH; y++) {
-        const sy = Math.min(srcH - 1, Math.floor(y / scale));
+        const sy = sourceY(y);
         for (let x = 0; x < dstW; x++) {
-          const sx = Math.min(srcW - 1, Math.floor(x / scale));
+          const sx = sourceX(x);
+          if (sx < 0 || sy < 0 || sx >= srcW || sy >= srcH) { outData[(y * dstW + x) * 4 + 3] = 0; continue; }
           outData[(y * dstW + x) * 4 + 3] = alphaData[sy * srcW + sx];
         }
       }
