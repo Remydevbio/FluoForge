@@ -14,6 +14,12 @@ The browser also keeps bounded recovery checkpoints in IndexedDB. Recovery draft
 
 PDF export preserves supported text and annotations as vectors and composites microscopy panels from their original channel data. Use Liberation Sans, Liberation Serif, or Liberation Mono for PDF labels; these fonts are bundled and embedded. TIFF export remains flattened and uses the same full resolution panel compositor.
 
+## Pen and editable paths
+
+Choose **Pen / Path** or press `P`. Click to add straight nodes, click and drag to create cubic Bézier handles, and mix both kinds in one path. Double-click or press Enter to finish; Escape cancels; clicking the first node closes the path. Shift constrains new segments and handles to 45° increments, while Ctrl snaps to nearby nodes and object edges or centers.
+
+Select a path and choose **Edit nodes** to move anchors and handles. Double-click a segment to insert a node. The panel can delete the selected node, switch corner and smooth behavior, convert the incoming segment between straight and curved, reopen or close the path, and add tangent-aligned arrowheads. Alt separates the handles while dragging a smooth node. Path nodes and handles remain editable after project save/load, copy/paste, and version restoration.
+
 ## Regression checks
 
 With the app open, run the following in the browser console:
@@ -41,3 +47,14 @@ script.onload = async () => console.log(await runProjectExportRegressions());
 ```
 
 This suite verifies three editable versions, source deduplication, legacy ZIP/JSON/gzip migration, recovery drafts and retention, storage-error reporting, native PDF paths and selectable text, clipping and opacity, explicit font failures, and source-resolution image export.
+
+The Pen/Path suite runs in the browser in the same way:
+
+```js
+const script = document.createElement('script');
+script.src = '/tests/path-regression.js';
+document.head.append(script);
+script.onload = async () => console.log(await runPathRegressions());
+```
+
+It verifies progressive drawing, mixed straight and cubic segments, node editing and insertion, corner/smooth conversion, Alt handle separation, closure, arrowheads, project persistence, copy/paste, legacy curve migration, and vector SVG/PDF export.

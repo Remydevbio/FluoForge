@@ -214,6 +214,23 @@ window.addEventListener('DOMContentLoaded', async () => {
     document.getElementById(id).addEventListener('input', () => MFC.applyShapeStyle());
     document.getElementById(id).addEventListener('change', () => MFC.applyShapeStyle());
   });
+  document.getElementById('path-mode-straight').addEventListener('click', () => MFC.setPathDefaultMode('straight'));
+  document.getElementById('path-mode-bezier').addEventListener('click', () => MFC.setPathDefaultMode('bezier'));
+  ['path-stroke-color','path-stroke-width','path-opacity','path-dash','path-line-cap','path-line-join','path-arrow-start','path-arrow-end'].forEach(id => {
+    document.getElementById(id).addEventListener('input', () => MFC.applyPathStyle());
+    document.getElementById(id).addEventListener('change', () => MFC.applyPathStyle());
+  });
+  document.getElementById('path-edit-nodes').addEventListener('click', () => {
+    const active=MFC.getCanvas().getActiveObject();
+    if(active?.__mfcNodeEdit)MFC.exitPathEdit(active);else MFC.enterPathEdit(active);
+  });
+  document.getElementById('path-edit-done').addEventListener('click', () => MFC.exitPathEdit());
+  document.getElementById('path-close-toggle').addEventListener('click', () => MFC.togglePathClosed());
+  document.getElementById('path-node-corner').addEventListener('click', () => MFC.setSelectedNodeType('corner'));
+  document.getElementById('path-node-smooth').addEventListener('click', () => MFC.setSelectedNodeType('smooth'));
+  document.getElementById('path-node-delete').addEventListener('click', () => MFC.deleteSelectedPathNode());
+  document.getElementById('path-segment-line').addEventListener('click', () => MFC.setSelectedIncomingSegment(false));
+  document.getElementById('path-segment-curve').addEventListener('click', () => MFC.setSelectedIncomingSegment(true));
   document.getElementById('crop-apply').addEventListener('click', () => {
     MFC.applyCrop();
     MFC.setTool('select');
@@ -349,6 +366,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   window.addEventListener('keydown', (e) => {
     const tag = (document.activeElement && document.activeElement.tagName) || '';
     if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+    if (MFC.handlePathKey(e)) return;
     const ctrl = e.ctrlKey || e.metaKey;
     if (ctrl && e.key.toLowerCase() === 'z' && !e.shiftKey) { e.preventDefault(); MFC.undo(); }
     else if (ctrl && (e.key.toLowerCase() === 'y' || (e.key.toLowerCase() === 'z' && e.shiftKey))) { e.preventDefault(); MFC.redo(); }
@@ -363,6 +381,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     else if (e.key.toLowerCase() === 't') { MFC.setTool('text'); }
     else if (e.key.toLowerCase() === 's' && !ctrl) { MFC.setTool('scalebar'); }
     else if (e.key.toLowerCase() === 'r' && !ctrl) { MFC.setTool('shape'); }
+    else if (e.key.toLowerCase() === 'p' && !ctrl) { MFC.setTool('path'); }
     else if (e.key === 'Delete' || e.key === 'Backspace') {
       const active = MFC.getCanvas().getActiveObjects();
       if (active.length) { active.forEach(o => MFC.getCanvas().remove(o)); MFC.getCanvas().discardActiveObject(); MFC.getCanvas().requestRenderAll(); MFC.pushHistory(); }

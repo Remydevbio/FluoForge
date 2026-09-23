@@ -59,7 +59,7 @@ async function runProjectExportRegressions() {
     await MFC_PROJECT.restoreVersion(version.id);
     const state=MFC_PROJECT.captureState();
     assert('version '+(i+1)+' restores correct image count',flatten(state.objects).filter(o=>o.mfcType==='mfcImage').length===(i===1?5:4));
-    assert('version '+(i+1)+' preserves editable group',canvas.getObjects().some(o=>o.type==='group'&&o.getObjects().some(c=>c.mfcShapeKind==='curve')));
+    assert('version '+(i+1)+' preserves editable group',canvas.getObjects().some(o=>o.type==='group'&&o.getObjects().some(c=>c.mfcShapeKind==='path'&&c.mfcPathNodes)));
     const views=canvas.getObjects().filter(o=>o.mfcIsInset);
     assert('version '+(i+1)+' preserves independent inset channels',MFC.getRegistry()[views[0].mfcId].rawImage.channels[0].enabled&&!MFC.getRegistry()[views[1].mfcId].rawImage.channels[0].enabled);
   }

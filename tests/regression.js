@@ -66,7 +66,10 @@ async function runMfcRegressions() {
   curve.mfcId = 'regressionCurve'; curve.mfcType = 'shape'; curve.mfcShapeKind = 'curve';
   MFC.installCurveControls(curve); canvas.add(curve);
   canvas.setActiveObject(curve); MFC.copySelection(); await MFC.pasteSelection();
-  assert('curve copy has editable handles', Object.keys(canvas.getActiveObject().controls).length === 3);
+  const curveCopy = canvas.getActiveObject(); MFC.enterPathEdit(curveCopy);
+  assert('curve copy has editable nodes and handles', curveCopy.mfcShapeKind === 'path' &&
+    curveCopy.mfcPathNodes.length === 2 && Object.keys(curveCopy.controls).some(key => key.startsWith('a')));
+  MFC.exitPathEdit(curveCopy);
   assert('curve exports to SVG', canvas.getActiveObject().toSVG().includes('<path'));
   assert('new text defaults to black', document.getElementById('text-color').value === '#000000');
   canvas.setActiveObject(line);
