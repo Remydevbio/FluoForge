@@ -18,6 +18,7 @@
  */
 
 const MFC = (function () {
+  fabric.Object.NUM_FRACTION_DIGITS = 8;
 
   const DASH_PRESETS = {
     solid: null,
@@ -28,225 +29,34 @@ const MFC = (function () {
   };
 
   let canvas;                       // fabric.Canvas
-  const MFC_VERSION = '0.19';
+  const MFC_VERSION = '0.20';
   function getAppVersion() { return MFC_VERSION; }
 
   let docProps = { name: 'Untitled Figure', width: 1748, height: 1240, unit: 'px', dpi: 300 }; // A4-ish default @300dpi
   let currentTool = 'select';
   let nextId = 1;
-  const registry = {};              // id -> { rawImage (from tiff.js), fileBase64 }
+  const registry = {};              // view id -> { rawImage, sourceId, sourceBlob, workingScale }
 
-  // ---- history (lightweight property snapshots, keyed by object id) ----
-  const history = { stack: [], index: -1, limit: 200 };
-
-  function snapshotState() {
-    return canvas.getObjects().filter(o => !o.mfcIsPageBounds).map(o => serializeObjectState(o));
-  }
-
-  function objectCanvasState(o) {
-    if (!o.group || o.group.type !== 'activeSelection')
-      return { left:o.left, top:o.top, scaleX:o.scaleX, scaleY:o.scaleY, angle:o.angle };
-    const matrix = o.calcTransformMatrix();
-    const origin = fabric.util.transformPoint(new fabric.Point(-o.width/2,-o.height/2),matrix);
-    const d = fabric.util.qrDecompose(matrix);
-    return { left:origin.x, top:origin.y, scaleX:d.scaleX, scaleY:d.scaleY, angle:d.angle };
-  }
-
-  function serializeObjectState(o) {
-    const position = objectCanvasState(o);
-    const base = {
-      id: o.mfcId, type: o.mfcType || o.type,
-      ...position, width: o.width, height: o.height,
-      cropX: o.cropX || 0, cropY: o.cropY || 0,
-      visible: o.visible !== false, locked: !!o.mfcLocked
-    };
-    if (o.mfcType === 'mfcImage') {
-      const entry = registry[o.mfcId];
-      base.channels = entry ? JSON.parse(JSON.stringify(
-        entry.rawImage.channels.map(c => ({ enabled: c.enabled, color: c.color, min: c.min, max: c.max }))
-      )) : null;
-      if (entry) {
-        base.brightness = entry.rawImage.brightness || 0;
-        base.contrast = entry.rawImage.contrast || 0;
-        base.alphaEnabled = entry.rawImage.alphaEnabled !== false;
-        base.voxelSizeUm = entry.rawImage.voxelSizeUm != null ? entry.rawImage.voxelSizeUm : null;
-      }
-      base.mfcFileName = o.mfcFileName;
-      base.mfcIsInset = !!o.mfcIsInset;
-      base.mfcInsetContourId = o.mfcInsetContourId || null;
-      base.mfcInsetSourceId = o.mfcInsetSourceId || null;
-    } else if (o.type === 'textbox') {
-      base.text = o.text;
-      base.styles = JSON.parse(JSON.stringify(o.styles || {}));
-      base.fontFamily = o.fontFamily; base.fontSize = o.fontSize; base.fill = o.fill;
-      base.backgroundColor = o.backgroundColor; base.textAlign = o.textAlign;
-      base.fontWeight = o.fontWeight; base.fontStyle = o.fontStyle; base.underline = o.underline; base.opacity = o.opacity; base.padding = o.padding;
-      base.mfcBorderWidth = o.mfcBorderWidth || 0; base.mfcBorderColor = o.mfcBorderColor || '#000000';
-    } else if (o.type === 'rect' && o.mfcType === 'shape') {
-      base.stroke = o.stroke; base.strokeWidth = o.strokeWidth;
-      base.fill = o.fill; base.strokeDashArray = o.strokeDashArray ? o.strokeDashArray.slice() : null;
-    } else {
-      // Everything else (scale bars, inset outlines, and any future misc object type):
-      // capture a full Fabric serialization as a reconstruction fallback, so undo can
-      // recreate one from scratch if it was deleted. Safe here (unlike mfcImage) since
-      // none of these embed large pixel payloads in their toObject() output.
-      base.fabricJSON = o.toObject([
-        'mfcId', 'mfcType', 'mfcAttachedTo', 'mfcCorner', 'mfcMarginPct',
-        'mfcInsetSourceId', 'mfcInsetTargetId', 'mfcRelX', 'mfcRelY', 'mfcRelW', 'mfcRelH', 'mfcCropX', 'mfcCropY', 'mfcCropW', 'mfcCropH', 'mfcShapeKind', 'mfcLengthUm'
-      ]);
-    }
-    return base;
-  }
-
+  // Undo, versions and recovery use one recursive serializer, without image bytes.
+  const history = { stack: [], index: -1, limit: 200, restoring: false };
   function pushHistory() {
-    const snap = snapshotState();
+    if (history.restoring) return;
+    const state = MFC_PROJECT.captureState();
     history.stack = history.stack.slice(0, history.index + 1);
-    history.stack.push(snap);
+    history.stack.push(state);
     if (history.stack.length > history.limit) history.stack.shift();
     history.index = history.stack.length - 1;
+    window.dispatchEvent(new Event('mfc:changed'));
   }
-
-  /** Builds a fresh fabric object for a snapshot entry whose object no longer exists on canvas (i.e. undo needs to restore something that was deleted). Returns null (synchronously) for the fabricJSON-fallback types (scalebar/insetContour), which are handled separately in applySnapshot since enlivenObjects is async. */
-  function reconstructObject(s) {
-    if (s.type === 'mfcImage') {
-      const entry = registry[s.id];
-      if (!entry) { console.warn('Cannot restore image ' + s.id + ' — its source data is no longer available.'); return null; }
-      const compositeCanvas = MFC_TIFF.compositeChannels(entry.rawImage, entry.workingScale);
-      const img = new fabric.Image(compositeCanvas, {
-        cornerStyle: 'circle', transparentCorners: false, cornerColor: '#5b8cff', borderColor: '#5b8cff'
-      });
-      img.mfcId = s.id;
-      img.mfcType = 'mfcImage';
-      img.mfcRawWidth = entry.rawImage.width;
-      img.mfcRawHeight = entry.rawImage.height;
-      img.mfcFileName = s.mfcFileName || entry.rawImage.fileName;
-      img.mfcIsInset = !!s.mfcIsInset;
-      img.mfcInsetContourId = s.mfcInsetContourId || null;
-      img.mfcInsetSourceId = s.mfcInsetSourceId || null;
-      return img;
-    }
-    if (s.type === 'textbox' || s.type === 'text') {
-      const t = new fabric.Textbox(s.text || '', {
-        fontFamily: s.fontFamily, fontSize: s.fontSize, fill: s.fill, styles: s.styles,
-        backgroundColor: s.backgroundColor || '', textAlign: s.textAlign || 'left',
-        fontWeight: s.fontWeight, fontStyle: s.fontStyle, underline: s.underline, opacity: s.opacity, padding: s.padding
-      });
-      t.mfcId = s.id; t.mfcType = 'text';
-      t.mfcBorderWidth = s.mfcBorderWidth || 0; t.mfcBorderColor = s.mfcBorderColor || '#000000';
-      attachTextListeners(t);
-      return t;
-    }
-    if (s.type === 'shape') {
-      const r = new fabric.Rect({
-        stroke: s.stroke, strokeWidth: s.strokeWidth, fill: s.fill, strokeDashArray: s.strokeDashArray,
-        cornerStyle: 'circle', transparentCorners: false, cornerColor: '#5b8cff', borderColor: '#5b8cff'
-      });
-      r.mfcId = s.id; r.mfcType = 'shape';
-      return r;
-    }
-    return null;
+  function resetHistory() { history.stack = []; history.index = -1; pushHistory(); }
+  async function moveHistory(delta) {
+    const index = history.index + delta;
+    if (history.restoring || index < 0 || index >= history.stack.length) return;
+    history.restoring = true;
+    try { await MFC_PROJECT.restoreState(history.stack[index], { resetHistory: false }); history.index = index; }
+    finally { history.restoring = false; }
   }
-
-  /** Reconstructs a fabricJSON-fallback object (scalebar/insetContour) via Fabric's async enlivenObjects. */
-  function reconstructFromFabricJSON(s) {
-    return new Promise((resolve) => {
-      fabric.util.enlivenObjects([s.fabricJSON], (enlivened) => {
-        const o = enlivened[0];
-        o.mfcId = s.id; o.mfcType = s.type;
-        const j = s.fabricJSON;
-        if (j.mfcAttachedTo) o.mfcAttachedTo = j.mfcAttachedTo;
-        if (j.mfcCorner) o.mfcCorner = j.mfcCorner;
-        if (j.mfcMarginPct != null) o.mfcMarginPct = j.mfcMarginPct;
-        if (j.mfcLengthUm != null) o.mfcLengthUm = j.mfcLengthUm;
-        if (j.mfcShapeKind) { o.mfcShapeKind = j.mfcShapeKind; installCurveControls(o); }
-        if (j.mfcInsetSourceId) o.mfcInsetSourceId = j.mfcInsetSourceId;
-        if (j.mfcInsetTargetId) o.mfcInsetTargetId = j.mfcInsetTargetId;
-        if (j.mfcRelX != null) o.mfcRelX = j.mfcRelX;
-        if (j.mfcRelY != null) o.mfcRelY = j.mfcRelY;
-        if (j.mfcRelW != null) o.mfcRelW = j.mfcRelW;
-        if (j.mfcRelH != null) o.mfcRelH = j.mfcRelH;
-        for (const key of ['mfcCropX','mfcCropY','mfcCropW','mfcCropH']) if (j[key] != null) o[key] = j[key];
-        resolve(o);
-      });
-    });
-  }
-
-  async function applySnapshot(snap) {
-    const byId = {};
-    canvas.getObjects().forEach(o => { if (!o.mfcIsPageBounds) byId[o.mfcId] = o; });
-    const snapIds = new Set(snap.map(s => s.id));
-
-    // Remove objects that exist on canvas but aren't in this snapshot — undo of an add,
-    // or redo of a delete.
-    Object.keys(byId).forEach(id => {
-      if (!snapIds.has(id)) { canvas.remove(byId[id]); delete byId[id]; }
-    });
-
-    // Add back (or update) every object the snapshot describes.
-    for (const s of snap) {
-      let o = byId[s.id];
-      if (!o) {
-        // Undo of a delete, or redo of an add whose object was itself removed by a later
-        // undo step — either way, it doesn't exist on canvas right now and needs rebuilding.
-        o = s.fabricJSON ? await reconstructFromFabricJSON(s) : reconstructObject(s);
-        if (!o) continue;
-        canvas.add(o);
-        byId[s.id] = o;
-      }
-      o.set({ left: s.left, top: s.top, scaleX: s.scaleX, scaleY: s.scaleY, angle: s.angle,
-               width: s.width, height: s.height, cropX: s.cropX, cropY: s.cropY,
-               visible: s.visible !== false });
-      o.mfcLocked = !!s.locked;
-      o.selectable = !o.mfcLocked;
-      o.evented = !o.mfcLocked;
-      if (s.type === 'mfcImage' && s.channels && registry[s.id]) {
-        const entry = registry[s.id];
-        entry.rawImage.channels.forEach((c, i) => Object.assign(c, s.channels[i]));
-        if (s.brightness !== undefined) entry.rawImage.brightness = s.brightness;
-        if (s.contrast !== undefined) entry.rawImage.contrast = s.contrast;
-        if (s.alphaEnabled !== undefined) entry.rawImage.alphaEnabled = s.alphaEnabled;
-        if (s.voxelSizeUm !== undefined) entry.rawImage.voxelSizeUm = s.voxelSizeUm;
-        recomposite(o);
-      }
-      if (o.type === 'textbox') {
-        o.set({ text: s.text, styles: s.styles, fontFamily: s.fontFamily, fontSize: s.fontSize, fill: s.fill,
-                backgroundColor: s.backgroundColor, textAlign: s.textAlign || 'left',
-                fontWeight: s.fontWeight, fontStyle: s.fontStyle, underline: s.underline, opacity: s.opacity, padding: s.padding });
-        o.mfcBorderWidth = s.mfcBorderWidth || 0; o.mfcBorderColor = s.mfcBorderColor || '#000000';
-        o.initDimensions && o.initDimensions();
-      }
-      if (o.type === 'rect' && o.mfcType === 'shape') {
-        o.set({ stroke: s.stroke, strokeWidth: s.strokeWidth, fill: s.fill, strokeDashArray: s.strokeDashArray });
-      }
-      if (o.type === 'path' && s.fabricJSON) {
-        o._setPath(s.fabricJSON.path);
-        o.set({ stroke: s.fabricJSON.stroke, strokeWidth: s.fabricJSON.strokeWidth,
-          strokeDashArray: s.fabricJSON.strokeDashArray, fill: s.fabricJSON.fill });
-      }
-      o.setCoords();
-    }
-
-    canvas.discardActiveObject();
-    canvas.requestRenderAll();
-    refreshShapePanel();
-    refreshChannelPanel();
-    refreshTextPanel();
-    refreshObjectSizePanel();
-    refreshScaleBarRefList();
-    refreshInsetPanel();
-    refreshLayersPanel();
-  }
-
-  async function undo() {
-    if (history.index <= 0) return;
-    history.index--;
-    await applySnapshot(history.stack[history.index]);
-  }
-  async function redo() {
-    if (history.index >= history.stack.length - 1) return;
-    history.index++;
-    await applySnapshot(history.stack[history.index]);
-  }
+  const undo = () => moveHistory(-1), redo = () => moveHistory(1);
 
   // ---- init ----
   function init() {
@@ -384,8 +194,8 @@ const MFC = (function () {
     canvas.setWidth((docPx.width + PAGE_PAD * 2) * zoomLevel);
     canvas.setHeight((docPx.height + PAGE_PAD * 2) * zoomLevel);
     // Pan the viewport so doc-space (0,0) lands PAGE_PAD in from the canvas edge,
-    // leaving pasteboard margin on every side. renderFullResCanvas/exportSVG (export.js,
-    // via withDocOnlyView below) temporarily undo this so exports only capture the page.
+    // leaving pasteboard margin on every side. The export compositor uses document
+    // coordinates directly and clips the generated SVG/PDF/TIFF to the page bounds.
     const vpt = canvas.viewportTransform;
     vpt[4] = PAGE_PAD * zoomLevel;
     vpt[5] = PAGE_PAD * zoomLevel;
@@ -394,32 +204,6 @@ const MFC = (function () {
     updateZoomDisplay();
   }
   function getZoomLevel() { return zoomLevel; }
-
-  /**
-   * Runs `callback(docPx)` with the canvas temporarily resized to EXACTLY the document
-   * (no pasteboard margin, no pan offset), so raster/SVG export only captures the page
-   * itself — anything parked out in the pasteboard is naturally clipped out, never
-   * baked into a TIFF/SVG/PDF export. Restores the normal pasteboard view afterward.
-   */
-  function withDocOnlyView(callback) {
-    const docPx = docPropsToPixels(docProps);
-    const prevW = canvas.getWidth(), prevH = canvas.getHeight();
-    const prevVpt = canvas.viewportTransform.slice();
-    canvas.setZoom(1);
-    canvas.setWidth(docPx.width);
-    canvas.setHeight(docPx.height);
-    canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
-    canvas.requestRenderAll();
-    try {
-      return callback(docPx);
-    } finally {
-      canvas.setWidth(prevW);
-      canvas.setHeight(prevH);
-      canvas.setZoom(zoomLevel);
-      canvas.setViewportTransform(prevVpt); // explicit, so it wins regardless of what setZoom() did to the translation
-      canvas.requestRenderAll();
-    }
-  }
 
   function applyDocProps(props) {
     docProps = props;
@@ -465,11 +249,8 @@ const MFC = (function () {
     const compositeCanvas = MFC_TIFF.compositeChannels(rawImage, scale);
 
     const id = 'img' + (nextId++);
-    let fileBase64 = null;
-    if (sourceFile) {
-      fileBase64 = await fileToBase64(sourceFile);
-    }
-    registry[id] = { rawImage, fileBase64, workingScale: scale };
+    const sourceId = await MFC_PROJECT.registerSource(sourceFile, rawImage);
+    registry[id] = { rawImage, sourceId, sourceBlob: sourceFile, workingScale: scale };
 
     const fabricImg = new fabric.Image(compositeCanvas, {
       left: 40 + (canvas.getObjects().length * 20) % 200,
@@ -491,15 +272,6 @@ const MFC = (function () {
     pushHistory();
     refreshChannelPanel();
     refreshScaleBarRefList();
-  }
-
-  function fileToBase64(file) {
-    return new Promise((resolve, reject) => {
-      const r = new FileReader();
-      r.onload = () => resolve(r.result); // data URL
-      r.onerror = reject;
-      r.readAsDataURL(file);
-    });
   }
 
   /** Recompute the composite for a given fabric image object from its raw channel data. */
@@ -1184,7 +956,7 @@ const MFC = (function () {
     // copy/paste. Raw pixel arrays are read-only and safe to share by reference.
     const clonedRaw = { ...entry.rawImage, channels: entry.rawImage.channels.map(c => ({ ...c })) };
     const insetId = 'img' + (nextId++);
-    registry[insetId] = { rawImage: clonedRaw, fileBase64: entry.fileBase64, workingScale: entry.workingScale };
+    registry[insetId] = { rawImage: clonedRaw, sourceId: entry.sourceId, sourceBlob: entry.sourceBlob, workingScale: entry.workingScale };
     const compositeCanvas = MFC_TIFF.compositeChannels(clonedRaw, entry.workingScale);
 
     insetImg = new fabric.Image(compositeCanvas, {
@@ -1575,7 +1347,7 @@ const MFC = (function () {
     const items = [bar];
     if (showLabel) {
       items.push(new fabric.Text(lengthUm + ' µm', {
-        left: 0, top: -20, fontSize: 16, fill: color, fontFamily: 'Arial', originX: 'left', originY: 'top'
+        left: 0, top: -20, fontSize: 16, fill: color, fontFamily: 'Liberation Sans', originX: 'left', originY: 'top'
       }));
     }
     const g = new fabric.Group(items, { left: 0, top: 0, originX: 'left', originY: 'top' });
@@ -1950,90 +1722,34 @@ const MFC = (function () {
     pushHistory();
   }
 
-  // ---- copy/paste ----
+  // Clipboard snapshots share immutable sources but restore independent view settings.
   let clipboardObj = null;
-  const CLONE_PROPS = ['mfcType','mfcAttachedTo','mfcCorner','mfcMarginPct','mfcLengthUm',
-    'mfcInsetSourceId','mfcInsetTargetId','mfcRelX','mfcRelY','mfcRelW','mfcRelH',
-    'mfcCropX','mfcCropY','mfcCropW','mfcCropH','mfcShapeKind','mfcBorderWidth','mfcBorderColor'];
-
-  function copySingle(obj) {
-    if (obj.mfcType === 'mfcImage') return {
-      kind: 'mfcImage', sourceId: obj.mfcId, props: serializeObjectState(obj)
-    };
-    return { kind: 'fabric', sourceId: obj.mfcId, json: obj.toObject(CLONE_PROPS) };
-  }
-
   function copySelection() {
-    const selected = canvas.getActiveObjects();
-    if (!selected.length) return;
-    // ActiveSelection gives its children group-local coordinates. Release it first
-    // so every snapshot has document coordinates, then restore the UI selection.
-    const wasMulti = selected.length > 1;
-    if (wasMulti) canvas.discardActiveObject();
-    clipboardObj = selected.map(copySingle);
-    if (wasMulti) canvas.setActiveObject(new fabric.ActiveSelection(selected, { canvas }));
+    const objects = canvas.getActiveObjects();
+    if (objects.length) clipboardObj = objects.map(o => MFC_PROJECT.serializeObject(o, true));
   }
-
-  function enliven(json) {
-    return new Promise(resolve => fabric.util.enlivenObjects([json], objects => resolve(objects[0])));
-  }
-
-  async function pasteSingle(item, dx, dy) {
-    if (item.kind === 'mfcImage') {
-      const src = registry[item.sourceId];
-      if (!src) return null;
-      const clonedRaw = { ...src.rawImage, channels: src.rawImage.channels.map(c => ({ ...c })) };
-      const id = 'img' + (nextId++);
-      registry[id] = { rawImage: clonedRaw, fileBase64: src.fileBase64, workingScale: src.workingScale };
-      const compositeCanvas = MFC_TIFF.compositeChannels(clonedRaw, src.workingScale);
-      const p = item.props;
-      const img = new fabric.Image(compositeCanvas, {
-        left: p.left + dx, top: p.top + dy, scaleX: p.scaleX, scaleY: p.scaleY,
-        angle: p.angle, cropX: p.cropX, cropY: p.cropY, width: p.width, height: p.height,
-        cornerStyle: 'circle', transparentCorners: false, cornerColor: '#5b8cff', borderColor: '#5b8cff'
-      });
-      img.mfcId = id; img.mfcType = 'mfcImage';
-      img.mfcRawWidth = clonedRaw.width; img.mfcRawHeight = clonedRaw.height;
-      img.mfcFileName = (p.mfcFileName || clonedRaw.fileName) + ' copy';
-      img.mfcIsInset = !!p.mfcIsInset;
-      img.mfcInsetContourId = p.mfcInsetContourId;
-      img.mfcInsetSourceId = p.mfcInsetSourceId;
-      img.setCoords(); canvas.add(img); return img;
-    }
-    const obj = await enliven(item.json);
-    obj.set({ left: obj.left + dx, top: obj.top + dy, evented: true });
-    obj.mfcId = (obj.mfcType || 'obj') + (nextId++);
-    // Fabric only rehydrates registered properties. Restore app metadata explicitly.
-    CLONE_PROPS.forEach(key => { if (item.json[key] !== undefined) obj[key] = item.json[key]; });
-    if (obj.type === 'textbox') { obj.mfcType = 'text'; attachTextListeners(obj); }
-    if (obj.mfcShapeKind === 'curve') installCurveControls(obj);
-    obj.setCoords(); canvas.add(obj); return obj;
-  }
-
   async function pasteSelection() {
     if (!clipboardObj) return;
-    const source = clipboardObj;
+    const items = JSON.parse(JSON.stringify(clipboardObj)), idMap = new Map();
+    const visit = (o, fn) => { fn(o); (o.objects || []).forEach(child => visit(child, fn)); if (o.clipPath) visit(o.clipPath, fn); };
+    items.forEach(item => visit(item, o => {
+      if (o.mfcId) { const id = (o.mfcType || 'obj') + nextId++; idMap.set(o.mfcId, id); o.mfcId = id; }
+    }));
+    items.forEach(item => visit(item, o => {
+      for (const key of ['mfcAttachedTo','mfcInsetSourceId','mfcInsetContourId','mfcInsetTargetId'])
+        if (idMap.has(o[key])) o[key] = idMap.get(o[key]);
+      if (o.mfcType === 'insetContour' && ![...idMap.values()].includes(o.mfcInsetTargetId)) o.mfcInsetTargetId = null;
+    }));
     canvas.discardActiveObject();
-    const pasted = (await Promise.all(source.map(item => pasteSingle(item, 24, 24)))).filter(Boolean);
-    if (!pasted.length) return;
-    const idMap = new Map(pasted.map((obj,i) => [source[i].sourceId, obj.mfcId]));
-    pasted.forEach(obj => {
-      if (idMap.has(obj.mfcAttachedTo)) obj.mfcAttachedTo = idMap.get(obj.mfcAttachedTo);
-      if (idMap.has(obj.mfcInsetSourceId)) obj.mfcInsetSourceId = idMap.get(obj.mfcInsetSourceId);
-      if (idMap.has(obj.mfcInsetContourId)) obj.mfcInsetContourId = idMap.get(obj.mfcInsetContourId);
-      if (idMap.has(obj.mfcInsetTargetId)) obj.mfcInsetTargetId = idMap.get(obj.mfcInsetTargetId);
-      else if (obj.mfcType === 'insetContour') obj.mfcInsetTargetId = null;
-    });
-    pasted.filter(o => o.mfcType === 'mfcImage' && !o.mfcIsInset).forEach(syncAttachments);
+    const pasted = [];
+    for (const item of items) {
+      item.left += 24; item.top += 24;
+      const obj = await MFC_PROJECT.restoreObject(item); canvas.add(obj); pasted.push(obj);
+    }
     canvas.setActiveObject(pasted.length === 1 ? pasted[0] : new fabric.ActiveSelection(pasted, { canvas }));
-    canvas.requestRenderAll(); pushHistory();
-    refreshChannelPanel(); refreshScaleBarRefList();
+    canvas.requestRenderAll(); pushHistory(); refreshChannelPanel(); refreshScaleBarRefList();
   }
-
-  async function duplicateSelection() {
-    copySelection();
-    await pasteSelection();
-  }
+  async function duplicateSelection() { copySelection(); await pasteSelection(); }
 
   // ---- grid layout assistant ----
   /**
@@ -2071,7 +1787,7 @@ const MFC = (function () {
       for (let c = 0; c < cols; c++) {
         const t = new fabric.Textbox('Label', {
           left: originX + c * (cellW + gap), top: originY - headerRowH, width: cellW,
-          fontSize: 18, textAlign: 'center', fontFamily: 'Arial', fill: '#000000'
+          fontSize: 18, textAlign: 'center', fontFamily: 'Liberation Sans', fill: '#000000'
         });
         t.mfcId = 'txt' + (nextId++); t.mfcType = 'text';
         attachTextListeners(t);
@@ -2082,7 +1798,7 @@ const MFC = (function () {
       for (let r = 0; r < rows; r++) {
         const t = new fabric.Textbox('Label', {
           left: 40, top: originY + r * (cellH + gap) + cellH / 2 - 12, width: headerColW - 12,
-          fontSize: 18, textAlign: 'right', fontFamily: 'Arial', fill: '#000000'
+          fontSize: 18, textAlign: 'right', fontFamily: 'Liberation Sans', fill: '#000000'
         });
         t.mfcId = 'txt' + (nextId++); t.mfcType = 'text';
         attachTextListeners(t);
@@ -2121,7 +1837,7 @@ const MFC = (function () {
     init, getCanvas, getDocProps, applyDocProps, setDocName, getAppVersion, docPropsToPixels,
     importFiles, addImageToCanvas, recomposite, refreshChannelPanel,
     applyPixelSize, applyAlphaToggle, applyBrightnessContrast, commitBrightnessContrast, resetToneCurve,
-    undo, redo, pushHistory,
+    undo, redo, pushHistory, resetHistory,
     setTool, setShapeKind, installCurveControls, align, copySelection, pasteSelection, duplicateSelection, nudgeSelection, refreshLayersPanel,
     groupSelection, ungroupSelection,
     applyCrop, cancelCrop, setCropAspectMode, applyCropFieldsToRect,
@@ -2132,7 +1848,7 @@ const MFC = (function () {
     applyShapeStyle, setShapeAspectMode, refreshShapePanel,
     createInsetFromContour, refreshInsetPanel, applyInsetContourStyle, setInsetAspectMode,
     zoomIn, zoomOut, zoomReset, updateZoomDisplay, setZoom, getZoomLevel, withDocOnlyView,
-    getRegistry, getNextIdCounter, setNextIdCounter, objectCanvasState,
+    getRegistry, getNextIdCounter, setNextIdCounter,
     get currentTool() { return currentTool; }
   };
 })();

@@ -35,7 +35,7 @@ const MFC_UI = (function () {
 
 function showDocPropsModal(onConfirm) {
   const backdrop = document.createElement('div');
-  backdrop.className = 'modal-backdrop';
+  backdrop.className = 'modal-backdrop document-start-modal';
   backdrop.innerHTML = `
     <div class="modal">
       <h2>Document Properties</h2>
@@ -94,7 +94,8 @@ function updateDocPixelPreview() {
   document.getElementById('doc-pixel-preview').textContent = `= ${px.width} × ${px.height} px at ${props.dpi} DPI`;
 }
 
-window.addEventListener('DOMContentLoaded', () => {
+window.addEventListener('DOMContentLoaded', async () => {
+  await document.fonts.load('24px "Liberation Sans"');
   MFC.init();
   document.getElementById('app-version').textContent = 'v' + MFC.getAppVersion();
   document.getElementById('doc-version-info').textContent = 'Created with v' + MFC.getAppVersion() + '.';
@@ -104,6 +105,9 @@ window.addEventListener('DOMContentLoaded', () => {
     MFC.applyDocProps(props);
     syncDocPropsPanel(props);
   });
+
+  MFC_AUTOSAVE.init();
+  document.getElementById('btn-versions').addEventListener('click', MFC_PROJECT.showVersions);
 
   // ---- document properties panel ----
   document.getElementById('doc-name').addEventListener('input', (e) => MFC.setDocName(e.target.value));
@@ -169,20 +173,20 @@ window.addEventListener('DOMContentLoaded', () => {
   // "Save Project": first time this session it prompts for a location (on
   // browsers that support the File System Access API); every click after
   // that overwrites the same file directly — fast, no new download each time.
-  document.getElementById('btn-save-project').addEventListener('click', () => MFC_EXPORT.saveProject(false));
+  document.getElementById('btn-save-project').addEventListener('click', () => MFC_PROJECT.saveProject(false));
 
   // "Save As": always prompts for a new file/location and switches future
   // "Save Project" clicks to target that new file.
   const saveAsBtn = document.getElementById('btn-save-project-as');
-  if (saveAsBtn) saveAsBtn.addEventListener('click', () => MFC_EXPORT.saveProject(true));
+  if (saveAsBtn) saveAsBtn.addEventListener('click', () => MFC_PROJECT.saveProject(true));
 
   // "Load Project": tries the native file picker (and remembers the picked
   // file so Save Project overwrites it going forward); falls back to the
   // plain <input type="file"> below on browsers without that API.
   const projInput = document.getElementById('project-input');
-  document.getElementById('btn-load-project').addEventListener('click', () => MFC_EXPORT.pickAndLoadProject());
+  document.getElementById('btn-load-project').addEventListener('click', () => MFC_PROJECT.pickAndLoadProject());
   projInput.addEventListener('change', (e) => {
-    if (e.target.files[0]) MFC_EXPORT.loadProject(e.target.files[0]);
+    if (e.target.files[0]) MFC_PROJECT.loadProject(e.target.files[0]).catch(error => MFC_UI.toast(error.message));
     projInput.value = '';
   });
 
@@ -273,7 +277,10 @@ window.addEventListener('DOMContentLoaded', () => {
   document.getElementById('ch-tone-reset').addEventListener('click', () => MFC.resetToneCurve());
 
   // ---- text panel ----
-  document.getElementById('text-font').addEventListener('change', (e) => MFC.applyTextStyle('fontFamily', e.target.value));
+  document.getElementById('text-font').addEventListener('change', async (e) => {
+    await document.fonts.load('24px "' + e.target.value + '"');
+    MFC.applyTextStyle('fontFamily', e.target.value);
+  });
   document.getElementById('text-size').addEventListener('change', (e) => MFC.applyTextStyle('fontSize', parseInt(e.target.value, 10)));
   document.getElementById('text-color').addEventListener('input', (e) => MFC.applyTextStyle('fill', e.target.value));
   document.getElementById('text-bg-enabled').addEventListener('change', (e) => {
@@ -350,7 +357,7 @@ window.addEventListener('DOMContentLoaded', () => {
     else if (ctrl && e.key.toLowerCase() === 'v') { MFC.pasteSelection(); }
     else if (ctrl && e.key.toLowerCase() === 'g' && e.shiftKey) { e.preventDefault(); MFC.ungroupSelection(); }
     else if (ctrl && e.key.toLowerCase() === 'g') { e.preventDefault(); MFC.groupSelection(); }
-    else if (ctrl && e.key.toLowerCase() === 's') { e.preventDefault(); MFC_EXPORT.saveProject(false); }
+    else if (ctrl && e.key.toLowerCase() === 's') { e.preventDefault(); MFC_PROJECT.saveProject(false); }
     else if (e.key.toLowerCase() === 'v') { MFC.setTool('select'); }
     else if (e.key.toLowerCase() === 'c') { MFC.setTool('crop'); }
     else if (e.key.toLowerCase() === 't') { MFC.setTool('text'); }

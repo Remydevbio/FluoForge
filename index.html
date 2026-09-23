@@ -44,6 +44,7 @@
     <button id="btn-docprops" title="Document Properties">&#9881; Document</button>
     <button id="btn-save-project" title="Save Project (overwrites the file you picked, if supported)">Save Project</button>
     <button id="btn-save-project-as" title="Save to a new file / location">Save As</button>
+    <button id="btn-versions">Versions</button>
     <button id="btn-load-project" title="Load Project">Load Project</button>
     <input type="file" id="project-input" accept=".json,.mfcproj.json,.gz,.mfcproj.json.gz,.zip,.mfcproj.zip" hidden>
   </div>
@@ -104,6 +105,9 @@
       <button id="doc-apply">Apply</button>
       <p class="hint" id="doc-pixel-preview"></p>
       <p class="hint" id="doc-version-info"></p>
+      <label>Next version name <input id="version-name" type="text" placeholder="Optional, for Save As"></label>
+      <p id="project-status" class="hint" role="status">Not saved yet</p>
+      <p id="autosave-status" class="hint" role="status">Browser recovery ready</p>
     </section>
 
     <section id="panel-layers" class="panel">
@@ -267,6 +271,9 @@
       <h3>Text</h3>
       <label>Font
         <select id="text-font">
+          <option>Liberation Sans</option>
+          <option>Liberation Serif</option>
+          <option>Liberation Mono</option>
           <option>Arial</option>
           <option>Helvetica</option>
           <option>Times New Roman</option>
@@ -275,6 +282,7 @@
           <option>Verdana</option>
         </select>
       </label>
+      <p class="hint">PDF embeds Liberation Sans, Serif, and Mono. Other fonts must be changed before PDF export.</p>
       <label>Size <input type="number" id="text-size" value="24" step="1"></label>
       <label>Text color <input type="color" id="text-color" value="#000000"></label>
       <label>Box background
@@ -312,6 +320,7 @@
 
 <!-- ======================= LIBRARIES ======================= -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.0/fabric.min.js"></script>
+<script src="assets/vendor/pako.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/utif@3.1.0/UTIF.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
@@ -319,6 +328,9 @@
 <!-- ======================= APP ======================= -->
 <script src="js/tiff.js"></script>
 <script src="js/canvas-app.js"></script>
+<script src="assets/vendor/svg2pdf.umd.min.js"></script>
+<script src="js/project.js"></script>
+<script src="js/autosave.js"></script>
 <script src="js/export.js"></script>
 <script src="js/main.js"></script>
 </body>

@@ -161,3 +161,20 @@ button.active,.toggle-btn.active{background:var(--accent-dim);border-color:var(-
   animation:mfc-spin .8s linear infinite;
 }
 @keyframes mfc-spin{to{transform:rotate(360deg);}}
+
+@font-face { font-family: 'Liberation Sans'; font-style: normal; font-weight: 400; src: url('assets/fonts/LiberationSans-Regular.ttf') format('truetype'); }
+@font-face { font-family: 'Liberation Sans'; font-style: normal; font-weight: 700; src: url('assets/fonts/LiberationSans-Bold.ttf') format('truetype'); }
+@font-face { font-family: 'Liberation Sans'; font-style: italic; font-weight: 400; src: url('assets/fonts/LiberationSans-Italic.ttf') format('truetype'); }
+@font-face { font-family: 'Liberation Sans'; font-style: italic; font-weight: 700; src: url('assets/fonts/LiberationSans-BoldItalic.ttf') format('truetype'); }
+@font-face { font-family: 'Liberation Serif'; font-style: normal; font-weight: 400; src: url('assets/fonts/LiberationSerif-Regular.ttf') format('truetype'); }
+@font-face { font-family: 'Liberation Serif'; font-style: normal; font-weight: 700; src: url('assets/fonts/LiberationSerif-Bold.ttf') format('truetype'); }
+@font-face { font-family: 'Liberation Serif'; font-style: italic; font-weight: 400; src: url('assets/fonts/LiberationSerif-Italic.ttf') format('truetype'); }
+@font-face { font-family: 'Liberation Serif'; font-style: italic; font-weight: 700; src: url('assets/fonts/LiberationSerif-BoldItalic.ttf') format('truetype'); }
+@font-face { font-family: 'Liberation Mono'; font-style: normal; font-weight: 400; src: url('assets/fonts/LiberationMono-Regular.ttf') format('truetype'); }
+@font-face { font-family: 'Liberation Mono'; font-style: normal; font-weight: 700; src: url('assets/fonts/LiberationMono-Bold.ttf') format('truetype'); }
+@font-face { font-family: 'Liberation Mono'; font-style: italic; font-weight: 400; src: url('assets/fonts/LiberationMono-Italic.ttf') format('truetype'); }
+@font-face { font-family: 'Liberation Mono'; font-style: italic; font-weight: 700; src: url('assets/fonts/LiberationMono-BoldItalic.ttf') format('truetype'); }
+.version-row { display:flex; align-items:center; gap:12px; margin:12px 0; }
+.versions-modal { max-height:80vh; overflow:auto; min-width:540px; }
+.storage-error { color:#ff8585; font-weight:bold; }
+.recovery-modal { z-index:10000; }
