@@ -18,6 +18,7 @@
     <button id="tool-text" class="tool-btn" data-tool="text" title="Text tool (T)">A Text</button>
     <button id="tool-scalebar" class="tool-btn" data-tool="scalebar" title="Scale bar tool (S)">&#8213; Scale bar</button>
     <button id="tool-shape" class="tool-btn" data-tool="shape" title="Rectangle/square tool (R)">&#9633; Shape</button>
+    <button id="tool-path" class="tool-btn" data-tool="path" title="Pen / Path tool (P)">&#9998; Pen / Path</button>
     <button id="tool-inset" class="tool-btn" data-tool="inset" title="Inset tool — draw an outline on an image (I)">&#8862; Inset</button>
     <button id="btn-grid" title="Arrange selected (or all) images into a grid with header labels">&#9638; Grid</button>
   </div>
@@ -221,8 +222,6 @@
       <div class="btn-row" id="shape-kinds">
         <button data-shape-kind="rect" class="toggle-btn active">Box</button>
         <button data-shape-kind="line" class="toggle-btn">Line</button>
-        <button data-shape-kind="polyline" class="toggle-btn">Polyline</button>
-        <button data-shape-kind="curve" class="toggle-btn">Curve</button>
       </div>
       <label>Stroke color <input type="color" id="shape-stroke-color" value="#ffffff"></label>
       <label>Stroke width <input type="number" id="shape-stroke-width" value="3" min="0" step="1"></label>
@@ -241,7 +240,71 @@
           <input type="color" id="shape-fill-color" value="#ffffff">
         </span>
       </label>
-      <p class="hint">Drag on the canvas to draw. Hold Shift while dragging (or use the Square toggle) to constrain to 1:1.</p>
+      <p class="hint">Drag on the canvas to draw a box or line. Hold Shift while drawing a box to constrain it to 1:1.</p>
+    </section>
+
+    <section id="panel-path" class="panel hidden">
+      <h3>Pen / Path</h3>
+      <div class="btn-row">
+        <button id="path-mode-straight" class="toggle-btn active path-wide-button">Straight</button>
+        <button id="path-mode-bezier" class="toggle-btn path-wide-button">Bézier</button>
+      </div>
+      <label>Stroke color <input type="color" id="path-stroke-color" value="#ffffff"></label>
+      <label>Stroke width <input type="number" id="path-stroke-width" value="3" min="0.1" step="0.5"></label>
+      <label>Opacity <input type="number" id="path-opacity" value="100" min="0" max="100" step="1"></label>
+      <label>Dash style
+        <select id="path-dash">
+          <option value="solid">Solid</option>
+          <option value="dashed">Dashed</option>
+          <option value="dotted">Dotted</option>
+          <option value="dashdot">Dash-dot</option>
+          <option value="longdash">Long dash</option>
+        </select>
+      </label>
+      <label>Line cap
+        <select id="path-line-cap">
+          <option value="round">Round</option>
+          <option value="butt">Butt</option>
+          <option value="square">Square</option>
+        </select>
+      </label>
+      <label>Line join
+        <select id="path-line-join">
+          <option value="round">Round</option>
+          <option value="miter">Miter</option>
+          <option value="bevel">Bevel</option>
+        </select>
+      </label>
+      <label>Start arrow
+        <select id="path-arrow-start">
+          <option value="none">None</option>
+          <option value="arrow">Arrow</option>
+        </select>
+      </label>
+      <label>End arrow
+        <select id="path-arrow-end">
+          <option value="none">None</option>
+          <option value="arrow">Arrow</option>
+        </select>
+      </label>
+      <div class="btn-row path-edit-actions">
+        <button id="path-edit-nodes" class="path-wide-button">Edit nodes</button>
+        <button id="path-close-toggle" class="path-wide-button">Close path</button>
+      </div>
+      <div id="path-node-actions" class="hidden">
+        <div class="btn-row path-edit-actions">
+          <button id="path-node-corner">Corner</button>
+          <button id="path-node-smooth">Smooth</button>
+          <button id="path-node-delete">Delete node</button>
+        </div>
+        <div class="btn-row path-edit-actions">
+          <button id="path-segment-line">Straight segment</button>
+          <button id="path-segment-curve">Curve segment</button>
+        </div>
+        <button id="path-edit-done">Done editing</button>
+      </div>
+      <p id="path-status" class="hint" role="status">Click to add nodes; drag a node while placing it to create Bézier handles.</p>
+      <p class="hint">Double-click or Enter finishes. Escape cancels. Click the first node to close. Shift constrains to 45° angles. Ctrl snaps to nearby nodes and object edges. In node editing, Alt breaks smooth handles.</p>
     </section>
 
     <section id="panel-inset" class="panel hidden">

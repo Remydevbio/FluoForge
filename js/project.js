@@ -107,7 +107,7 @@ const MFC_PROJECT = (() => {
     for (const key of Object.keys(json).filter(k => k.startsWith('mfc'))) obj[key] = json[key];
     if (json.clipPath) obj.clipPath = await restoreObject(json.clipPath, registry, forExport);
     if (obj.type === 'textbox') MFC.attachTextListeners(obj);
-    if (obj.mfcShapeKind === 'curve') MFC.installCurveControls(obj);
+    if (['path','curve','polyline'].includes(obj.mfcShapeKind)) MFC.installPathControls(obj);
     obj.setCoords();
     return obj;
   }
