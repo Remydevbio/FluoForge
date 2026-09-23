@@ -1847,7 +1847,7 @@ const MFC = (function () {
     arrangeGrid,
     applyShapeStyle, setShapeAspectMode, refreshShapePanel,
     createInsetFromContour, refreshInsetPanel, applyInsetContourStyle, setInsetAspectMode,
-    zoomIn, zoomOut, zoomReset, updateZoomDisplay, setZoom, getZoomLevel, withDocOnlyView,
+    zoomIn, zoomOut, zoomReset, updateZoomDisplay, setZoom, getZoomLevel,
     getRegistry, getNextIdCounter, setNextIdCounter,
     get currentTool() { return currentTool; }
   };
