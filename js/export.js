@@ -51,6 +51,7 @@ const MFC_EXPORT = (() => {
     if (unsupported.size) throw new Error('Export cannot preserve: ' + [...unsupported].join('; ') + '. No file was exported.');
   }
   async function buildSVG({ pdf = false } = {}) {
+    if (!MFC.hasDocument) throw new Error('Create or open a figure before exporting.');
     const state = MFC_PROJECT.captureState();
     preflight(state.objects, pdf);
     const size = MFC.docPropsToPixels(state.docProps);

@@ -1,7 +1,6 @@
 async function runProjectExportRegressions() {
   const checks=[], assert=(name,ok)=>{if(!ok)throw new Error(name);checks.push(name);};
   const canvas=MFC.getCanvas();
-  document.querySelector('.document-start-modal button')?.click();
   MFC.applyDocProps({name:'Publication verification',width:3800,height:2400,unit:'px',dpi:300});
   await document.fonts.load('72px "Liberation Sans"');
   const imported=async path=>{const response=await fetch(path);if(!response.ok)throw new Error('Generate tests/fixtures first');return new File([await response.blob()],path.split('/').pop());};

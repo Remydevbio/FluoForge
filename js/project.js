@@ -56,10 +56,13 @@ const MFC_PROJECT = (() => {
     return json;
   }
   function captureState() {
-    return { schema: 1, docProps: copy(MFC.getDocProps()), nextId: MFC.getNextIdCounter(),
+    return { schema: 1, documentOpen: MFC.hasDocument, docProps: copy(MFC.getDocProps()), nextId: MFC.getNextIdCounter(),
       objects: MFC.getCanvas().getObjects().filter(o => !o.mfcIsPageBounds && o.mfcId).map(o => serializeObject(o, true)) };
   }
-  function fingerprint(state) { return JSON.stringify(state); }
+  function fingerprint(state) {
+    return JSON.stringify({schema:state.schema, documentOpen:state.documentOpen !== false,
+      docProps:state.docProps, nextId:state.nextId, objects:state.objects});
+  }
   async function sourceRaw(id) {
     if (decoded.has(id)) return decoded.get(id);
     const source = sources.get(id);
@@ -120,9 +123,11 @@ const MFC_PROJECT = (() => {
       const canvas = MFC.getCanvas();
       canvas.discardActiveObject(); canvas.clear();
       const live = MFC.getRegistry(); Object.keys(live).forEach(k => delete live[k]); Object.assign(live, registry);
-      MFC.applyDocProps(copy(state.docProps));
+      if (state.documentOpen === false) MFC.closeDocument();
+      else MFC.applyDocProps(copy(state.docProps));
       MFC.setNextIdCounter(state.nextId || 1);
       objects.forEach(o => canvas.add(o));
+      if (MFC.hasDocument) MFC.setTool('select');
       if (resetHistory) MFC.resetHistory();
       syncDocPropsPanel(state.docProps);
       MFC.refreshLayersPanel(); MFC.refreshChannelPanel(); MFC.refreshScaleBarRefList();
@@ -137,6 +142,7 @@ const MFC_PROJECT = (() => {
     return [...ids];
   }
   function prepareSave(newVersion, name = '') {
+    if (!MFC.hasDocument) throw new Error('Create or open a figure before saving.');
     if (!newVersion && context.currentVersionId && context.workingBaseVersionId !== context.currentVersionId)
       throw new Error('An earlier version is restored. Use Save As to create a new version without replacing the latest saved version.');
     const next = copy(context), state = captureState(), now = Date.now();
@@ -172,6 +178,7 @@ const MFC_PROJECT = (() => {
   }
   async function saveProject(saveAs = false) {
     if (busy) return;
+    if (!MFC.hasDocument) { MFC_UI.toast('Create or open a figure before saving.'); return; }
     if (!saveAs && context.currentVersionId && context.workingBaseVersionId !== context.currentVersionId) {
       MFC_UI.toast('Earlier version restored. Use Save As to create a new version.'); return;
     }
@@ -285,6 +292,16 @@ const MFC_PROJECT = (() => {
       await loadProject(await handle.getFile(), handle);
     } catch (error) { if (error.name !== 'AbortError') MFC_UI.toast(error.message); }
   }
+  async function createProject(props) {
+    if (busy) throw new Error('Wait for the current project operation to finish.');
+    if (MFC.hasDocument) await MFC_AUTOSAVE.checkpoint();
+    busy = true;
+    try {
+      await restoreState({schema:1, documentOpen:true, docProps:copy(props), nextId:1, objects:[]});
+      context = freshContext(); fileHandle = null;
+      status('New figure — not saved yet');
+    } finally { busy = false; }
+  }
   async function restoreVersion(id) {
     if (!context.states[id]) throw new Error('Version not found.');
     await MFC_AUTOSAVE.checkpoint();
@@ -309,6 +326,6 @@ const MFC_PROJECT = (() => {
   function adoptRecovery(next) { context = next; fileHandle = null; }
   return { registerSource, sources, captureState, restoreState, restoreObject, serializeObject, fingerprint,
     referencedSources, prepareSave, buildArchive, commitSave, readArchive, saveProject, loadProject,
-    pickAndLoadProject, restoreVersion, showVersions, status, adoptRecovery,
+    pickAndLoadProject, createProject, restoreVersion, showVersions, status, adoptRecovery,
     get context() { return context; }, get suspended() { return restoring || busy; } };
 })();

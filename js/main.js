@@ -3,6 +3,84 @@
  */
 
 const MFC_UI = (function () {
+  const themeIds = ['light', 'sage', 'dark', 'slate'];
+  let focusedPanel = null;
+  function applyTheme(theme) {
+    if (!themeIds.includes(theme)) theme = 'light';
+    document.documentElement.dataset.theme = theme;
+    document.getElementById('theme-select').value = theme;
+    try { localStorage.setItem('fluoforge-theme', theme); } catch (_) { /* Preferences are optional. */ }
+  }
+  function initInspector() {
+    let savedTheme;
+    try { savedTheme = localStorage.getItem('fluoforge-theme'); } catch (_) { /* Use system theme. */ }
+    applyTheme(savedTheme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'slate' : 'light'));
+    document.getElementById('theme-select').addEventListener('change', event => applyTheme(event.target.value));
+    document.querySelectorAll('#side-panel > .panel').forEach(panel => {
+      const heading = panel.querySelector(':scope > h3');
+      const body = document.createElement('div'); body.className = 'panel-body'; body.id = panel.id + '-body';
+      Array.from(panel.childNodes).filter(child => child !== heading).forEach(child => body.append(child));
+      const toggle = document.createElement('button'); toggle.type = 'button'; toggle.className = 'panel-toggle';
+      while (heading.firstChild) toggle.append(heading.firstChild);
+      toggle.setAttribute('aria-controls', body.id);
+      toggle.setAttribute('aria-expanded', 'false'); body.hidden = true;
+      heading.append(toggle); panel.append(body);
+      toggle.addEventListener('click', () => {
+        body.hidden = !body.hidden; toggle.setAttribute('aria-expanded', String(!body.hidden));
+      });
+    });
+    document.getElementById('inspector-collapse-all').addEventListener('click', () => {
+      document.querySelectorAll('#side-panel > .panel').forEach(panel => {
+        panel.querySelector('.panel-body').hidden = true;
+        panel.querySelector('.panel-toggle').setAttribute('aria-expanded', 'false');
+      });
+    });
+    document.getElementById('side-panel').addEventListener('focusin', event => {
+      const panel = event.target.closest('.panel');
+      if (panel) highlightPanel(panel);
+    });
+    document.getElementById('side-panel').addEventListener('click', event => {
+      const panel = event.target.closest('.panel');
+      if (panel) highlightPanel(panel);
+    });
+    updateDocumentState(false);
+  }
+  function highlightPanel(panel) {
+    document.querySelectorAll('#side-panel > .panel').forEach(item => {
+      item.classList.toggle('panel-focused', item === panel);
+      item.style.order = item === panel ? '-1' : '';
+    });
+    focusedPanel = panel.id;
+    document.getElementById('inspector-context').textContent = panel.querySelector('.panel-toggle').textContent.trim();
+  }
+  function focusPanel(id, force = false) {
+    const panel = document.getElementById(id);
+    if (!panel || panel.classList.contains('hidden')) return;
+    if (focusedPanel === id && !force) return;
+    highlightPanel(panel);
+    panel.querySelector('.panel-body').hidden = false;
+    panel.querySelector('.panel-toggle').setAttribute('aria-expanded', 'true');
+    document.getElementById('side-panel').scrollTop = 0;
+  }
+  function focusSelection(object, tool, force = false) {
+    const tools = {crop:'panel-crop',text:'panel-text',scalebar:'panel-scalebar',shape:'panel-shape',path:'panel-path',inset:'panel-inset'};
+    let panel = tool !== 'select' ? tools[tool] : null;
+    if (!panel && object) {
+      panel = object.mfcShapeKind === 'path' ? 'panel-path' :
+        ({mfcImage:'panel-channels',text:'panel-text',scalebar:'panel-scalebar',shape:'panel-shape',insetContour:'panel-inset'})[object.mfcType] || 'panel-object';
+    }
+    if (panel) focusPanel(panel, force);
+    else {
+      document.querySelectorAll('.panel-focused').forEach(item => { item.classList.remove('panel-focused'); item.style.order = ''; });
+      focusedPanel = null; document.getElementById('inspector-context').textContent = MFC.hasDocument ? 'Select an object or tool' : 'No document open';
+    }
+  }
+  function updateDocumentState(open) {
+    document.body.classList.toggle('document-open', open);
+    document.getElementById('workspace-empty').hidden = open;
+    document.querySelectorAll('[data-requires-document]').forEach(element => { element.disabled = !open; });
+    if (!open) document.getElementById('inspector-context').textContent = 'No document open';
+  }
   let toastTimer;
   function toast(msg) {
     const el = document.getElementById('toast');
@@ -30,15 +108,17 @@ const MFC_UI = (function () {
     if (savingBackdrop) { savingBackdrop.remove(); savingBackdrop = null; }
   }
 
-  return { toast, showSavingDialog, hideSavingDialog };
+  return { toast, showSavingDialog, hideSavingDialog, initInspector, applyTheme,
+    focusPanel, focusSelection, updateDocumentState };
 })();
 
 function showDocPropsModal(onConfirm) {
+  if (document.querySelector('.document-start-modal')) return;
   const backdrop = document.createElement('div');
   backdrop.className = 'modal-backdrop document-start-modal';
   backdrop.innerHTML = `
-    <div class="modal">
-      <h2>Document Properties</h2>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="create-document-title">
+      <h2 id="create-document-title">Create a figure</h2>
       <label style="display:flex;justify-content:space-between;margin-bottom:8px;">Project name
         <input type="text" id="m-name" value="Untitled Figure" style="width:160px;">
       </label>
@@ -58,7 +138,8 @@ function showDocPropsModal(onConfirm) {
       <label style="display:flex;justify-content:space-between;margin-bottom:8px;">DPI
         <input type="number" id="m-dpi" value="300" step="1" style="width:120px;">
       </label>
-      <div class="btn-row"><button id="m-ok">Create Document</button></div>
+      <p id="m-error" class="storage-error" role="alert"></p>
+      <div class="btn-row"><button id="m-cancel">Cancel</button><button id="m-ok">Create Document</button></div>
     </div>`;
   document.body.appendChild(backdrop);
   document.getElementById('m-ok').addEventListener('click', () => {
@@ -69,9 +150,17 @@ function showDocPropsModal(onConfirm) {
       unit: document.getElementById('m-unit').value,
       dpi: parseInt(document.getElementById('m-dpi').value, 10)
     };
-    document.body.removeChild(backdrop);
-    onConfirm(props);
+    const pixels = MFC.docPropsToPixels(props);
+    if (!Number.isFinite(pixels.width + pixels.height) || pixels.width < 1 || pixels.height < 1 || !(props.dpi > 0)) {
+      document.getElementById('m-error').textContent = 'Enter a positive width, height, and DPI.'; return;
+    }
+    onConfirm(props).then(() => backdrop.remove()).catch(error => {
+      document.getElementById('m-error').textContent = error.message;
+    });
   });
+  document.getElementById('m-cancel').addEventListener('click', () => backdrop.remove());
+  backdrop.addEventListener('keydown', event => { if (event.key === 'Escape') backdrop.remove(); });
+  document.getElementById('m-name').focus();
 }
 
 function syncDocPropsPanel(props) {
@@ -96,15 +185,20 @@ function updateDocPixelPreview() {
 
 window.addEventListener('DOMContentLoaded', async () => {
   await document.fonts.load('24px "Liberation Sans"');
+  MFC_UI.initInspector();
   MFC.init();
   document.getElementById('app-version').textContent = 'v' + MFC.getAppVersion();
   document.getElementById('doc-version-info').textContent = 'Created with v' + MFC.getAppVersion() + '.';
   MFC.refreshLayersPanel();
 
-  showDocPropsModal((props) => {
-    MFC.applyDocProps(props);
-    syncDocPropsPanel(props);
+  syncDocPropsPanel(MFC.getDocProps());
+  const createDocument = () => showDocPropsModal(async props => {
+    await MFC_PROJECT.createProject(props);
+    MFC_UI.focusPanel('panel-docprops', true);
   });
+  document.getElementById('btn-new-document').addEventListener('click', createDocument);
+  document.getElementById('empty-create-document').addEventListener('click', createDocument);
+  document.getElementById('empty-open-project').addEventListener('click', () => MFC_PROJECT.pickAndLoadProject());
 
   MFC_AUTOSAVE.init();
   document.getElementById('btn-versions').addEventListener('click', MFC_PROJECT.showVersions);
@@ -125,7 +219,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     MFC.applyDocProps(props);
   });
   document.getElementById('btn-docprops').addEventListener('click', () => {
-    document.getElementById('panel-docprops').scrollIntoView({ behavior: 'smooth' });
+    MFC_UI.focusPanel('panel-docprops', true);
   });
 
   // ---- toolbar tools ----
@@ -152,6 +246,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     e.preventDefault(); dropHint.classList.add('hidden');
   }));
   canvasWrap.addEventListener('drop', (e) => {
+    if (!MFC.hasDocument) { MFC_UI.toast('Create or open a figure first.'); return; }
     if (e.dataTransfer.files && e.dataTransfer.files.length) MFC.importFiles(e.dataTransfer.files);
   });
 
@@ -334,7 +429,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   // ---- grid layout panel ----
   document.getElementById('btn-grid').addEventListener('click', () => {
     document.getElementById('panel-grid').classList.remove('hidden');
-    document.getElementById('panel-grid').scrollIntoView({ behavior: 'smooth' });
+    MFC_UI.focusPanel('panel-grid', true);
   });
   document.getElementById('grid-cancel').addEventListener('click', () => document.getElementById('panel-grid').classList.add('hidden'));
   document.getElementById('grid-arrange').addEventListener('click', () => {
@@ -366,6 +461,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   window.addEventListener('keydown', (e) => {
     const tag = (document.activeElement && document.activeElement.tagName) || '';
     if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+    if (!MFC.hasDocument || document.querySelector('.modal-backdrop')) return;
     if (MFC.handlePathKey(e)) return;
     const ctrl = e.ctrlKey || e.metaKey;
     if (ctrl && e.key.toLowerCase() === 'z' && !e.shiftKey) { e.preventDefault(); MFC.undo(); }
@@ -405,9 +501,11 @@ window.addEventListener('DOMContentLoaded', async () => {
 function attachColorPalettesToAllInputs() {
   const NORMAL = ['#e6194b', '#f58231', '#ffe119', '#3cb44b', '#46f0f0', '#4363d8', '#911eb4', '#f032e6', '#000000', '#ffffff'];
   const PASTEL = ['#ffb3ba', '#ffdfba', '#ffffba', '#baffc9', '#bae1ff', '#d5baff', '#e8d5c4', '#d0d0d0'];
-  const PALETTE = [...NORMAL, ...PASTEL];
+  const DARK = ['#8f3049', '#8f5329', '#72621f', '#315f4c', '#275b69', '#3f4e87', '#604a78', '#493d45'];
+  const GRAYS = ['#f4f4f4', '#d0d0d0', '#a0a0a0', '#707070', '#484848', '#242424'];
+  const PALETTE = [...NORMAL, ...PASTEL, ...DARK, ...GRAYS];
 
-  ['text-color', 'text-bg-color', 'text-border-color', 'shape-stroke-color', 'shape-fill-color', 'sb-color', 'inset-stroke-color'].forEach(id => {
+  ['text-color', 'text-bg-color', 'text-border-color', 'shape-stroke-color', 'shape-fill-color', 'path-stroke-color', 'sb-color', 'inset-stroke-color'].forEach(id => {
     const input = document.getElementById(id);
     if (input) attachColorPalette(input, PALETTE);
   });

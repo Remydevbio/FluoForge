@@ -1,7 +1,8 @@
 /* IndexedDB drafts are recovery checkpoints, never permanent project versions. */
 const MFC_AUTOSAVE = (() => {
-  const DB_NAME = 'FluoForge-recovery-v1' + (new URLSearchParams(location.search).has('test') ? '-test' : ''), LIMIT = 8;
-  let dbPromise, timer, running = false, offering = false, lastFingerprint = '', initialized = false;
+  const testId = new URLSearchParams(location.search).get('test');
+  const DB_NAME = 'FluoForge-recovery-v1' + (testId ? '-test-' + testId.replace(/[^\w-]/g, '') : ''), LIMIT = 8;
+  let dbPromise, timer, running = false, offering = false, lastFingerprint = '', lastProjectId = null, initialized = false;
   function storageError(error) {
     const el = document.getElementById('autosave-status');
     el.textContent = 'Browser recovery unavailable: ' + error.message + '. Save your project manually.';
@@ -39,12 +40,12 @@ const MFC_AUTOSAVE = (() => {
     await done;
   }
   async function checkpoint() {
-    if (running || offering || MFC_PROJECT.suspended || !initialized) return null;
+    if (running || offering || !MFC.hasDocument || MFC_PROJECT.suspended || !initialized) return null;
     running = true;
     try {
       const capturedAt = Date.now(), state = MFC_PROJECT.captureState(), context = MFC_PROJECT.context;
       const fp = MFC_PROJECT.fingerprint(state);
-      if (fp === lastFingerprint || fp === context.savedFingerprint || (!state.objects.length && !context.currentVersionId)) return null;
+      if ((context.projectId === lastProjectId && fp === lastFingerprint) || fp === context.savedFingerprint || (!state.objects.length && !context.currentVersionId)) return null;
       const ids = MFC_PROJECT.referencedSources([state, ...Object.values(context.states)]);
       await ensureSources(ids);
       const db = await openDB();
@@ -57,7 +58,7 @@ const MFC_AUTOSAVE = (() => {
         name: state.docProps.name, lastSavedAt: context.savedAt });
       tx.objectStore('checkpoints').put(record);
       checkpoints.slice(LIMIT-1).forEach(c => tx.objectStore('checkpoints').delete(c.id));
-      await done; lastFingerprint = fp;
+      await done; lastFingerprint = fp; lastProjectId = context.projectId;
       document.getElementById('autosave-status').classList.remove('storage-error');
       document.getElementById('autosave-status').textContent = 'Recovery saved ' + new Date(record.timestamp).toLocaleTimeString();
       return record;
@@ -72,7 +73,7 @@ const MFC_AUTOSAVE = (() => {
       tx.objectStore('projects').put({ projectId: context.projectId, context: structuredClone(context), sourceIds: ids,
         name: MFC.getDocProps().name, lastSavedAt: context.savedAt });
       existing.filter(c => c.projectId === context.projectId && c.timestamp <= context.savedAt).forEach(c => tx.objectStore('checkpoints').delete(c.id));
-      await done; lastFingerprint = context.savedFingerprint;
+      await done; lastFingerprint = context.savedFingerprint; lastProjectId = context.projectId;
     } catch (error) { storageError(error); }
   }
   async function candidates(projectId) {
@@ -98,7 +99,7 @@ const MFC_AUTOSAVE = (() => {
     }
     const next = structuredClone(project.context); next.workingBaseVersionId = draft.baseVersionId;
     await MFC_PROJECT.restoreState(draft.state); MFC_PROJECT.adoptRecovery(next);
-    lastFingerprint = draft.fingerprint;
+    lastFingerprint = draft.fingerprint; lastProjectId = project.projectId;
     document.querySelector('.document-start-modal')?.remove();
     MFC_PROJECT.status('Recovered draft from ' + new Date(draft.timestamp).toLocaleString() + '. Save manually to keep it.');
   }

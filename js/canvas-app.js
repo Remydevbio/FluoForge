@@ -29,11 +29,12 @@ const MFC = (function () {
   };
 
   let canvas;                       // fabric.Canvas
-  const MFC_VERSION = '0.21';
+  const MFC_VERSION = '0.22-dev';
   function getAppVersion() { return MFC_VERSION; }
 
   let docProps = { name: 'Untitled Figure', width: 1748, height: 1240, unit: 'px', dpi: 300 }; // A4-ish default @300dpi
   let currentTool = 'select';
+  let documentOpen = false;
   let nextId = 1;
   const registry = {};              // view id -> { rawImage, sourceId, sourceBlob, workingScale }
 
@@ -64,7 +65,7 @@ const MFC = (function () {
       preserveObjectStacking: true,
       selection: true
     });
-    applyDocProps(docProps);
+    setZoom(1);
 
     canvas.on('object:modified', (e) => {
       const obj = e.target;
@@ -165,6 +166,7 @@ const MFC = (function () {
 
   /** Creates (or resizes/re-adds, e.g. after canvas.clear()) the white page-bounds rect that visually marks the document area within the larger pasteboard. Excluded from selection, history, save/export. */
   function ensurePageRect() {
+    if (!documentOpen) return;
     const docPx = docPropsToPixels(docProps);
     if (!pageRect || canvas.getObjects().indexOf(pageRect) === -1) {
       pageRect = new fabric.Rect({
@@ -190,6 +192,14 @@ const MFC = (function () {
   function zoomReset() { setZoom(1); }
   function setZoom(z) {
     zoomLevel = Math.min(20, Math.max(0.05, z));
+    if (!documentOpen) {
+      canvas.setDimensions({ width: Math.max(1, document.getElementById('canvas-wrap').clientWidth),
+        height: Math.max(1, document.getElementById('canvas-wrap').clientHeight) });
+      canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
+      canvas.requestRenderAll();
+      updateZoomDisplay();
+      return;
+    }
     const docPx = docPropsToPixels(docProps);
     canvas.setZoom(zoomLevel);
     canvas.setWidth((docPx.width + PAGE_PAD * 2) * zoomLevel);
@@ -207,9 +217,22 @@ const MFC = (function () {
   function getZoomLevel() { return zoomLevel; }
 
   function applyDocProps(props) {
+    const px = docPropsToPixels(props);
+    if (!Number.isFinite(px.width + px.height) || px.width < 1 || px.height < 1 || !(props.dpi > 0))
+      throw new Error('Enter a positive width, height, and DPI.');
     docProps = props;
+    documentOpen = true;
+    MFC_UI.updateDocumentState(true);
     setZoom(zoomLevel); // recomputes canvas dimensions from the new docProps at current zoom
     ensurePageRect();
+  }
+
+  function closeDocument() {
+    documentOpen = false;
+    if (pageRect) canvas.remove(pageRect);
+    pageRect = null;
+    MFC_UI.updateDocumentState(false);
+    setZoom(1);
   }
 
   function docPropsToPixels(props) {
@@ -482,6 +505,7 @@ const MFC = (function () {
     refreshLayersPanel();
     const objs = canvas.getActiveObjects ? canvas.getActiveObjects() : [];
     document.getElementById('align-bar').classList.toggle('hidden', objs.length < 2);
+    MFC_UI.focusSelection(activeObject, currentTool);
   }
 
   // ---- object size panel (shows on-screen displayed size of the selected object,
@@ -825,6 +849,7 @@ const MFC = (function () {
   }
 
   function onCanvasMouseDown(opt) {
+    if (!documentOpen) return;
     if (currentTool === 'path') {
       beginPathPointer(canvas.getPointer(opt.e), opt.e);
       return;
@@ -1493,8 +1518,9 @@ const MFC = (function () {
   }
 
   function commandPointFromControl(path,x,y) {
-    const transform=fabric.util.multiplyTransformMatrices((path.canvas?path.canvas.viewportTransform:fabric.iMatrix),path.calcTransformMatrix());
-    const local=fabric.util.transformPoint(new fabric.Point(x,y),fabric.util.invertTransform(transform));
+    // Fabric's actionHandler receives document coordinates (getPointer already undoes
+    // the viewport). Removing zoom/pasteboard a second time made nodes jump on dragging.
+    const local=fabric.util.transformPoint(new fabric.Point(x,y),fabric.util.invertTransform(path.calcTransformMatrix()));
     return point(local.x+path.pathOffset.x,local.y+path.pathOffset.y);
   }
 
@@ -1504,7 +1530,10 @@ const MFC = (function () {
     const before=pathNodeWorld(path,nodes[safe]);
     path._setPath(pathCommands(nodes,path.mfcPathClosed));
     const after=pathNodeWorld(path,nodes[safe]);
-    path.set({left:path.left+before.x-after.x,top:path.top+before.y-after.y});
+    // Position lives in the parent's coordinate space when a path is grouped.
+    const inverseParent = path.group ? fabric.util.invertTransform(path.group.calcTransformMatrix()) : fabric.iMatrix;
+    const delta = fabric.util.transformPoint(new fabric.Point(before.x-after.x,before.y-after.y),inverseParent,true);
+    path.set({left:path.left+delta.x,top:path.top+delta.y});
     if(path.__mfcNodeEdit)path.controls=buildNodeControls(path);
     path.setCoords();path.dirty=true;installPathRendering(path);
   }
@@ -1515,16 +1544,22 @@ const MFC = (function () {
   }
 
   function makeNodeControl(path,index,handleName=null) {
-    return new fabric.Control({cursorStyle:handleName?'crosshair':'move',cornerSize:12,
+    return new fabric.Control({cursorStyle:handleName?'crosshair':'move',cornerSize:12,actionName:'modifyPath',
       positionHandler:(_dim,_matrix,obj)=>{
         const node=obj.mfcPathNodes[index],value=(handleName?node[handleName]:node)||node;
         const local=new fabric.Point(value.x-obj.pathOffset.x,value.y-obj.pathOffset.y);
         return fabric.util.transformPoint(local,fabric.util.multiplyTransformMatrices((obj.canvas?obj.canvas.viewportTransform:fabric.iMatrix),obj.calcTransformMatrix()));
       },
-      mouseDownHandler:(_evt,transform)=>{transform.target.__mfcSelectedNode=index;refreshPathPanel();return true;},
+      mouseDownHandler:(_evt,transform,x,y)=>{
+        const obj=transform.target,node=obj.mfcPathNodes[index],value=handleName?node[handleName]:node;
+        const pointer=commandPointFromControl(obj,x,y);
+        transform.mfcGrabOffset=point(value.x-pointer.x,value.y-pointer.y);
+        obj.__mfcSelectedNode=index;refreshPathPanel();return true;
+      },
       actionHandler:(evt,transform,x,y)=>{
         const obj=transform.target,nodes=obj.mfcPathNodes,node=nodes[index];obj.__mfcSelectedNode=index;
         let value=commandPointFromControl(obj,x,y);
+        if(transform.mfcGrabOffset){value.x+=transform.mfcGrabOffset.x;value.y+=transform.mfcGrabOffset.y;}
         if(evt.ctrlKey){const raw=canvas.getPointer(evt),snapped=snapPathPoint(raw,true,obj);if(snapped.snapped){
           const inv=fabric.util.invertTransform(obj.calcTransformMatrix()),local=fabric.util.transformPoint(new fabric.Point(snapped.point.x,snapped.point.y),inv);
           value=point(local.x+obj.pathOffset.x,local.y+obj.pathOffset.y);
@@ -1575,7 +1610,7 @@ const MFC = (function () {
     if(!path||path.mfcShapeKind!=='path')return false;
     path.__mfcNodeEdit=true;path.__mfcSelectedNode=Math.min(path.__mfcSelectedNode||0,path.mfcPathNodes.length-1);
     path.controls=buildNodeControls(path);path.hasBorders=false;path.lockMovementX=true;path.lockMovementY=true;
-    canvas.setActiveObject(path);canvas.requestRenderAll();refreshPathPanel();setPathStatus('Node editing active. Double-click a segment to insert a node.',true);return true;
+    canvas.setActiveObject(path);canvas.requestRenderAll();refreshPathPanel();MFC_UI.focusPanel('panel-path');setPathStatus('Node editing active. Double-click a segment to insert a node.',true);return true;
   }
 
   function exitPathEdit(path=canvas.getActiveObject()) {
@@ -2258,8 +2293,12 @@ const MFC = (function () {
 
   // ---- tool switching ----
   function setTool(tool) {
+    if (!documentOpen) return;
     if (tool !== 'path' && pathDraft) cancelPathDrawing();
     currentTool = tool;
+    // Non-selectable flags do not stop Fabric dragging an object that is already
+    // active. Creation tools must release that selection before the next pointer down.
+    if (['inset','shape','path','text'].includes(tool)) canvas.discardActiveObject();
     document.querySelectorAll('.tool-btn').forEach(b => b.classList.toggle('active', b.dataset.tool === tool));
     document.getElementById('panel-crop').classList.toggle('hidden', tool !== 'crop');
     document.getElementById('panel-scalebar').classList.toggle('hidden', tool !== 'scalebar');
@@ -2277,6 +2316,7 @@ const MFC = (function () {
     refreshShapePanel();
     refreshPathPanel();
     refreshInsetPanel();
+    MFC_UI.focusSelection(canvas.getActiveObject(), tool, true);
   }
 
   function getRegistry() { return registry; }
@@ -2284,7 +2324,7 @@ const MFC = (function () {
   function setNextIdCounter(v) { nextId = v; }
 
   return {
-    init, getCanvas, getDocProps, applyDocProps, setDocName, getAppVersion, docPropsToPixels,
+    init, getCanvas, getDocProps, applyDocProps, closeDocument, setDocName, getAppVersion, docPropsToPixels,
     importFiles, addImageToCanvas, recomposite, refreshChannelPanel,
     applyPixelSize, applyAlphaToggle, applyBrightnessContrast, commitBrightnessContrast, resetToneCurve,
     undo, redo, pushHistory, resetHistory,
@@ -2302,6 +2342,7 @@ const MFC = (function () {
     createInsetFromContour, refreshInsetPanel, applyInsetContourStyle, setInsetAspectMode,
     zoomIn, zoomOut, zoomReset, updateZoomDisplay, setZoom, getZoomLevel,
     getRegistry, getNextIdCounter, setNextIdCounter,
+    get hasDocument() { return documentOpen; },
     get currentTool() { return currentTool; }
   };
 })();
