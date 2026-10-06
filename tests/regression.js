@@ -5,8 +5,7 @@ async function runMfcRegressions() {
     if (!condition) throw new Error('Regression failed: ' + name);
     checks.push(name);
   };
-  const closeModal = document.querySelector('.modal-backdrop button');
-  if (closeModal) closeModal.click();
+  MFC.applyDocProps({name:'Interaction regression',width:1000,height:700,unit:'px',dpi:300});
   const canvas = MFC.getCanvas();
   const srcCanvas = document.createElement('canvas');
   srcCanvas.width = srcCanvas.height = 64;

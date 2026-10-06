@@ -2,7 +2,7 @@
 async function runPathRegressions() {
   const checks=[];
   const assert=(name,value)=>{if(!value)throw new Error('Path regression failed: '+name);checks.push(name);};
-  document.querySelector('.document-start-modal button')?.click();
+  MFC.applyDocProps({name:'Path regression',width:1000,height:700,unit:'px',dpi:300});
   const canvas=MFC.getCanvas();
   canvas.getObjects().filter(object=>!object.mfcIsPageBounds).forEach(object=>canvas.remove(object));
   const eventAt=(x,y,options={})=>{
@@ -57,14 +57,14 @@ async function runPathRegressions() {
   path.__mfcSelectedNode=2;MFC.setSelectedNodeType('smooth');MFC.enterPathEdit(path);
   let node=path.mfcPathNodes[2],desired={x:node.handleOut.x+30,y:node.handleOut.y+35};
   let local=new fabric.Point(desired.x-path.pathOffset.x,desired.y-path.pathOffset.y);
-  let screen=fabric.util.transformPoint(local,fabric.util.multiplyTransformMatrices(canvas.viewportTransform,path.calcTransformMatrix()));
+  let screen=fabric.util.transformPoint(local,path.calcTransformMatrix());
   path.controls.o2.actionHandler({altKey:false,ctrlKey:false},{target:path},screen.x,screen.y);
   node=path.mfcPathNodes[2];
   const incoming={x:node.handleIn.x-node.x,y:node.handleIn.y-node.y},outgoing={x:node.handleOut.x-node.x,y:node.handleOut.y-node.y};
   assert('smooth handle drag keeps handles collinear',Math.abs(incoming.x*outgoing.y-incoming.y*outgoing.x)<.01&&incoming.x*outgoing.x+incoming.y*outgoing.y<0);
   const oldOpposite={...node.handleIn};desired={x:node.handleOut.x+45,y:node.handleOut.y+20};
   local=new fabric.Point(desired.x-path.pathOffset.x,desired.y-path.pathOffset.y);
-  screen=fabric.util.transformPoint(local,fabric.util.multiplyTransformMatrices(canvas.viewportTransform,path.calcTransformMatrix()));
+  screen=fabric.util.transformPoint(local,path.calcTransformMatrix());
   path.controls.o2.actionHandler({altKey:true,ctrlKey:false},{target:path},screen.x,screen.y);
   assert('Alt breaks smooth handle coupling',path.mfcPathNodes[2].type==='corner'&&
     path.mfcPathNodes[2].handleIn.x===oldOpposite.x&&path.mfcPathNodes[2].handleIn.y===oldOpposite.y);
