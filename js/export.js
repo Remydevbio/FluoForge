@@ -130,15 +130,21 @@ const MFC_EXPORT = (() => {
       { t282:[output.dpi],t283:[output.dpi],t296:[2] });
     return { blob:new Blob([bytes],{type:'image/tiff'}), ...output };
   }
+  /** Project name as a safe file name (invalid/control characters replaced), or a default. */
+  function exportBaseName() {
+    const name = String(MFC.getDocProps().name || '').replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_')
+      .replace(/\s+/g, ' ').trim().replace(/^[.\s]+|[.\s]+$/g, '');
+    return (/^(con|prn|aux|nul|com\d|lpt\d)$/i.test(name) ? '_' + name : name).slice(0, 150) || 'figure_export';
+  }
   async function exportFile(kind) {
     if (exporting) return; exporting=true; MFC_UI.showSavingDialog('Rendering '+kind.toUpperCase()+'…');
     try {
       const output = kind === 'pdf' ? await buildPDF() : kind === 'tiff' ? await buildTIFF() : await buildSVG();
-      download(output.blob || new Blob([output.svg],{type:'image/svg+xml'}),'figure_export.'+kind);
+      download(output.blob || new Blob([output.svg],{type:'image/svg+xml'}),exportBaseName()+'.'+kind);
       MFC_UI.toast(kind.toUpperCase()+' exported.');
     } catch(error) { console.error(error); MFC_UI.toast(error.message); MFC_PROJECT.status(error.message); }
     finally { exporting=false; MFC_UI.hideSavingDialog(); }
   }
-  return { download, buildSVG, buildPDF, buildTIFF, renderSVG,
+  return { download, exportBaseName, buildSVG, buildPDF, buildTIFF, renderSVG,
     exportPDF:()=>exportFile('pdf'), exportSVG:()=>exportFile('svg'), exportTIFF:()=>exportFile('tiff') };
 })();

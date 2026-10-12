@@ -24,8 +24,11 @@ async function runDevInterfaceRegressions() {
   MFC_UI.applyTheme(initialTheme);
   MFC.setTool('shape');
   const shapePanel=document.getElementById('panel-shape'),toggle=shapePanel.querySelector('.panel-toggle');
-  assert('Active tool opens and highlights its inspector',shapePanel.classList.contains('panel-focused')&&toggle.getAttribute('aria-expanded')==='true'&&shapePanel.style.order==='-1');
+  assert('Active tool highlights its inspector without reordering it',shapePanel.classList.contains('panel-focused')&&shapePanel.style.order==='');
+  if(shapePanel.querySelector('.panel-body').hidden)toggle.click();
   toggle.click();assert('Inspector sections collapse',shapePanel.querySelector('.panel-body').hidden&&toggle.getAttribute('aria-expanded')==='false');
+  MFC.setTool('select');MFC.setTool('shape');
+  assert('Tool switching never reopens a collapsed section',shapePanel.querySelector('.panel-body').hidden);
   toggle.click();assert('Inspector sections reopen',!shapePanel.querySelector('.panel-body').hidden);
   MFC.setTool('path');
   assert('Switching tools prioritizes the new inspector',document.getElementById('panel-path').classList.contains('panel-focused')&&!shapePanel.classList.contains('panel-focused'));

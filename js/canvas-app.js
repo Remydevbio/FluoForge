@@ -29,7 +29,7 @@ const MFC = (function () {
   };
 
   let canvas;                       // fabric.Canvas
-  const MFC_VERSION = '0.22-dev';
+  const MFC_VERSION = '0.23-dev';
   function getAppVersion() { return MFC_VERSION; }
 
   let docProps = { name: 'Untitled Figure', width: 1748, height: 1240, unit: 'px', dpi: 300 }; // A4-ish default @300dpi
@@ -69,21 +69,31 @@ const MFC = (function () {
 
     canvas.on('object:modified', (e) => {
       const obj = e.target;
-      // Textbox handles: corner/top/bottom drags change scaleX/scaleY (which stretch the
-      // glyphs without touching the numeric fontSize property — that's the bug where the
-      // Size field in the panel goes stale). Convert any leftover scale into a real
-      // fontSize + width change and reset scale to 1, so what's on screen always matches
-      // the number in the panel.
-      if (obj && obj.type === 'textbox' && (obj.scaleX !== 1 || obj.scaleY !== 1)) {
-        const newFontSize = Math.max(4, Math.round(obj.fontSize * obj.scaleY));
-        const newWidth = Math.max(20, obj.width * obj.scaleX);
-        obj.set({ fontSize: newFontSize, width: newWidth, scaleX: 1, scaleY: 1 });
-        obj.setCoords();
-        refreshTextPanel();
-      }
+      // Corner handles scale a text box; fontSize stays the single source of truth, so
+      // the scale is folded into fontSize/width (and box height) and reset to 1.
+      if (obj && obj.type === 'textbox' && normalizeTextScale(obj)) refreshTextPanel();
       if (obj && obj.type === 'activeSelection') obj.getObjects().forEach(o => { if (o.mfcType === 'mfcImage') syncAttachments(o); });
       else if (obj && obj.mfcType === 'mfcImage') syncAttachments(obj);
+      refreshSelectionBar();
       pushHistory();
+    });
+    canvas.on('object:resizing', (e) => { refreshSelectionBar(); if (e.target && e.target.type === 'textbox') refreshTextPanel(); });
+
+    // Shift while rotating snaps to 45° steps, pivoting on the object's center like Fabric's own rotation.
+    canvas.on('object:rotating', (e) => {
+      const obj = e.target;
+      if (!obj) return;
+      if (e.e && e.e.shiftKey) {
+        const snapped = ((Math.round((obj.angle || 0) / 45) * 45) % 360 + 360) % 360;
+        if (snapped !== obj.angle) {
+          const center = obj.getCenterPoint();
+          obj.set('angle', snapped);
+          obj.setPositionByOrigin(center, 'center', 'center');
+          obj.setCoords();
+        }
+      }
+      if (obj.mfcType === 'mfcImage') syncAttachments(obj);
+      refreshSelectionBar();
     });
     canvas.on('selection:created', onSelectionChanged);
     canvas.on('selection:updated', onSelectionChanged);
@@ -91,7 +101,12 @@ const MFC = (function () {
     canvas.on('object:added', e => { if (!e.target?.mfcIsPathHelper && !e.target?.mfcIsPathDraft) refreshLayersPanel(); });
     canvas.on('object:removed', e => { if (!e.target?.mfcIsPathHelper && !e.target?.mfcIsPathDraft) refreshLayersPanel(); });
     canvas.on('text:changed', () => { /* debounced via object:modified on blur */ });
-    canvas.on('mouse:down', onCanvasMouseDown);
+    canvas.on('mouse:down', (opt) => {
+      // A highlighted range belongs to the editing session in which it was made; any new
+      // click on the canvas starts over, so later panel edits apply to the whole box.
+      lastTextSelection = null;
+      onCanvasMouseDown(opt);
+    });
     canvas.on('mouse:move', onCanvasMouseMove);
     canvas.on('mouse:up', onCanvasMouseUp);
     canvas.on('mouse:dblclick', onCanvasDoubleClick);
@@ -104,6 +119,7 @@ const MFC = (function () {
       if (e.target.type === 'activeSelection') {
         e.target.getObjects().forEach(o => { if (o.mfcType === 'mfcImage') syncAttachments(o); });
       }
+      refreshSelectionBar();
     });
 
     // Ctrl+scroll (or pinch, which browsers report as ctrlKey+wheel) zooms the CANVAS,
@@ -112,7 +128,7 @@ const MFC = (function () {
       if (!opt.e.ctrlKey) return; // let the page/div scroll normally otherwise
       opt.e.preventDefault();
       opt.e.stopPropagation();
-      setZoom(zoomLevel * (0.999 ** opt.e.deltaY));
+      setZoom(zoomLevel * (0.999 ** opt.e.deltaY), zoomAnchor(opt.e));
     });
 
     // default-locked aspect ratio; Shift unlocks (fabric convention: uniformScaling + key)
@@ -142,7 +158,7 @@ const MFC = (function () {
 
       if (obj.mfcType === 'mfcImage') { syncAttachments(obj); }
       if (obj.mfcType === 'insetContour') syncInsetFromContour(obj);
-      refreshObjectSizePanel();
+      refreshSelectionBar();
       if (obj.type === 'textbox') refreshTextPanel();
     });
 
@@ -187,10 +203,57 @@ const MFC = (function () {
     const el = document.getElementById('zoom-display');
     if (el) el.textContent = Math.round(zoomLevel * 100) + '%';
   }
-  function zoomIn() { setZoom(zoomLevel * 1.2); }
-  function zoomOut() { setZoom(zoomLevel / 1.2); }
-  function zoomReset() { setZoom(1); }
-  function setZoom(z) {
+  function zoomIn() { setZoom(zoomLevel * 1.2, zoomAnchor()); }
+  function zoomOut() { setZoom(zoomLevel / 1.2, zoomAnchor()); }
+  function zoomReset() { setZoom(1, zoomAnchor()); }
+
+  // The canvas element grows/shrinks with zoom inside the scrolling #canvas-wrap, so a
+  // zoom anchor is a document point plus where it should appear in the visible area;
+  // after resizing, the wrap is scrolled to put that point back there.
+  function canvasViewMetrics() {
+    const wrap = document.getElementById('canvas-wrap');
+    const wrapRect = wrap.getBoundingClientRect(), elRect = canvas.lowerCanvasEl.getBoundingClientRect();
+    return { wrap, rect: wrapRect,
+      offsetX: elRect.left - wrapRect.left - wrap.clientLeft + wrap.scrollLeft,
+      offsetY: elRect.top - wrapRect.top - wrap.clientTop + wrap.scrollTop };
+  }
+  function viewCenterAnchor() {
+    const m = canvasViewMetrics();
+    const view = { x: m.wrap.clientWidth / 2, y: m.wrap.clientHeight / 2 };
+    return { view, doc: { x: (m.wrap.scrollLeft + view.x - m.offsetX) / zoomLevel - PAGE_PAD,
+      y: (m.wrap.scrollTop + view.y - m.offsetY) / zoomLevel - PAGE_PAD } };
+  }
+  /** Selection center (brought to the middle of the view) if something is selected, otherwise the cursor (wheel) or the view center (buttons/shortcuts). */
+  function zoomAnchor(pointerEvent) {
+    if (!documentOpen) return null;
+    const active = canvas.getActiveObject();
+    const m = canvasViewMetrics();
+    if (active) {
+      const b = active.getBoundingRect(true, true);
+      return { doc: { x: b.left + b.width / 2, y: b.top + b.height / 2 },
+        view: { x: m.wrap.clientWidth / 2, y: m.wrap.clientHeight / 2 } };
+    }
+    if (pointerEvent) {
+      const p = canvas.getPointer(pointerEvent);
+      return { doc: { x: p.x, y: p.y }, view: { x: pointerEvent.clientX - m.rect.left, y: pointerEvent.clientY - m.rect.top } };
+    }
+    return viewCenterAnchor();
+  }
+  function scrollToAnchor(anchor) {
+    const m = canvasViewMetrics();
+    m.wrap.scrollLeft = m.offsetX + (anchor.doc.x + PAGE_PAD) * zoomLevel - anchor.view.x;
+    m.wrap.scrollTop = m.offsetY + (anchor.doc.y + PAGE_PAD) * zoomLevel - anchor.view.y;
+  }
+  /** Fit the selection in the visible area, centered. */
+  function zoomToSelection() {
+    const active = canvas.getActiveObject();
+    if (!active) { MFC_UI.toast('Select an object to zoom to it.'); return; }
+    const b = active.getBoundingRect(true, true), wrap = document.getElementById('canvas-wrap');
+    const z = 0.85 * Math.min(wrap.clientWidth / Math.max(1, b.width), wrap.clientHeight / Math.max(1, b.height));
+    setZoom(z, { doc: { x: b.left + b.width / 2, y: b.top + b.height / 2 }, view: { x: wrap.clientWidth / 2, y: wrap.clientHeight / 2 } });
+  }
+
+  function setZoom(z, anchor = null) {
     zoomLevel = Math.min(20, Math.max(0.05, z));
     if (!documentOpen) {
       canvas.setDimensions({ width: Math.max(1, document.getElementById('canvas-wrap').clientWidth),
@@ -211,6 +274,8 @@ const MFC = (function () {
     vpt[4] = PAGE_PAD * zoomLevel;
     vpt[5] = PAGE_PAD * zoomLevel;
     canvas.setViewportTransform(vpt);
+    if (anchor) scrollToAnchor(anchor);
+    canvas.calcOffset();
     canvas.requestRenderAll();
     updateZoomDisplay();
   }
@@ -493,38 +558,126 @@ const MFC = (function () {
     const activeObject=canvas.getActiveObject();
     canvas.getObjects().filter(object=>object.__mfcNodeEdit&&object!==activeObject).forEach(path=>{
       path.__mfcNodeEdit=false;path.controls=path.__mfcStandardControls||fabric.Object.prototype.controls;
-      path.hasBorders=true;path.lockMovementX=false;path.lockMovementY=false;path.setCoords();
+      path.hasBorders=true;applyLockState(path);path.setCoords();
     });
+    applySelectionLock();
     refreshChannelPanel();
-    refreshObjectSizePanel();
+    refreshSelectionBar();
     refreshTextPanel();
     refreshScaleBarRefList();
     refreshShapePanel();
     refreshPathPanel();
     refreshInsetPanel();
     refreshLayersPanel();
-    const objs = canvas.getActiveObjects ? canvas.getActiveObjects() : [];
-    document.getElementById('align-bar').classList.toggle('hidden', objs.length < 2);
     MFC_UI.focusSelection(activeObject, currentTool);
   }
 
-  // ---- object size panel (shows on-screen displayed size of the selected object,
-  // editable so multiple images can be matched to the same size) ----
-  function refreshObjectSizePanel() {
-    const panel = document.getElementById('panel-object');
+  // ---- locks ----
+  // Layer lock (mfcLocked) blocks everything: the object is not selectable, not
+  // targetable by the mouse, and not editable. Position/size lock (mfcPositionLocked)
+  // keeps the object selectable and editable (channels, colors, text, styles) but
+  // blocks moving, scaling, rotating and skewing. Every code path derives Fabric's
+  // flags from these two properties through applyLockState, including tool switches,
+  // project loading, undo/redo and paste.
+  function isTransformLocked(o) {
+    if (!o) return false;
+    if (o.type === 'activeSelection') return o.getObjects().some(isTransformLocked);
+    return !!(o.mfcLocked || o.mfcPositionLocked);
+  }
+  function selectionToolActive() { return currentTool === 'select' || currentTool === 'scalebar'; }
+  function applyLockState(o) {
+    if (!o || o.mfcIsPageBounds || o.mfcIsPathHelper || o.mfcIsPathDraft) return;
+    const full = !!o.mfcLocked, fixed = full || !!o.mfcPositionLocked;
+    const move = fixed || !!o.__mfcNodeEdit;
+    o.set({ lockMovementX: move, lockMovementY: move, lockScalingX: fixed, lockScalingY: fixed,
+      lockRotation: fixed, lockSkewingX: fixed, lockSkewingY: fixed, hasControls: !fixed || !!o.__mfcNodeEdit });
+    o.selectable = !full && selectionToolActive();
+    o.evented = !full;
+    if (o.type === 'textbox') o.editable = !full;
+    o.hoverCursor = fixed ? 'pointer' : null;
+  }
+  /** A multi-selection containing any locked object cannot be dragged, scaled or rotated as a whole. */
+  function applySelectionLock() {
     const active = canvas.getActiveObject();
-    if (!active || active.type === 'activeSelection' || currentTool === 'crop') {
-      panel.classList.add('hidden');
+    if (!active || active.type !== 'activeSelection') return;
+    const fixed = isTransformLocked(active);
+    active.set({ lockMovementX: fixed, lockMovementY: fixed, lockScalingX: fixed, lockScalingY: fixed,
+      lockRotation: fixed, lockSkewingX: fixed, lockSkewingY: fixed, hasControls: !fixed });
+  }
+  function refuseLocked(o, what = 'moved, resized or rotated') {
+    if (!isTransformLocked(o)) return false;
+    MFC_UI.toast('Position/size is locked — unlock it to have it ' + what + '.');
+    return true;
+  }
+  function setPositionLock(o, locked) {
+    if (locked && o.__mfcNodeEdit) exitPathEdit(o);
+    o.mfcPositionLocked = !!locked;
+    applyLockState(o);
+  }
+  function togglePositionLockSelection() {
+    const objs = canvas.getActiveObjects();
+    if (!objs.length) return;
+    const lock = !objs.every(o => o.mfcPositionLocked);
+    objs.forEach(o => setPositionLock(o, lock));
+    applySelectionLock();
+    canvas.requestRenderAll();
+    refreshSelectionBar(); refreshLayersPanel();
+    pushHistory();
+  }
+
+  // ---- selection bar (contextual sub-bar under the top bar): position, size, rotation,
+  // position lock and alignment for whatever is selected. Its height never changes. ----
+  /** Width/height a user means by "size": the box itself for text boxes and inset outlines (no stroke), the drawn extent otherwise. */
+  function objectSize(o) {
+    if (o.type === 'textbox' || o.mfcType === 'insetContour')
+      return { width: o.width * Math.abs(o.scaleX || 1), height: o.height * Math.abs(o.scaleY || 1) };
+    return { width: o.getScaledWidth(), height: o.getScaledHeight() };
+  }
+  function setFieldValue(id, value, disabled) {
+    const el = document.getElementById(id);
+    if (document.activeElement !== el) el.value = value;
+    el.disabled = !!disabled;
+  }
+  function refreshSelectionBar() {
+    const label = document.getElementById('sel-label');
+    if (!label) return;
+    const active = canvas.getActiveObject();
+    const transform = document.getElementById('sel-transform'), alignGroup = document.getElementById('sel-align');
+    const note = document.getElementById('sel-lock-note');
+    const objs = canvas.getActiveObjects();
+    if (!active || active === cropRect) {
+      label.textContent = active && active === cropRect ? 'Crop region — use the Crop panel' : 'Nothing selected';
+      transform.classList.add('hidden'); alignGroup.classList.add('hidden'); note.classList.add('hidden');
       return;
     }
-    panel.classList.remove('hidden');
-    document.getElementById('obj-width').value = Math.round(active.getScaledWidth());
-    document.getElementById('obj-height').value = Math.round(active.getScaledHeight());
-    document.getElementById('obj-angle').value = Math.round(active.angle || 0);
-
+    const multi = active.type === 'activeSelection';
+    const locked = isTransformLocked(active);
+    label.textContent = multi ? objs.length + ' objects selected' : layerLabel(active);
+    label.title = label.textContent;
+    transform.classList.remove('hidden');
+    alignGroup.classList.toggle('hidden', objs.length < 2);
+    const box = active.getBoundingRect(true, true), size = multi ? box : objectSize(active);
+    setFieldValue('obj-x', Math.round(box.left), locked);
+    setFieldValue('obj-y', Math.round(box.top), locked);
+    setFieldValue('obj-width', Math.round(size.width), locked || multi);
+    setFieldValue('obj-height', Math.round(size.height), locked || multi);
+    setFieldValue('obj-angle', multi ? '' : Math.round(active.angle || 0), locked || multi);
+    document.getElementById('obj-lock-aspect').disabled = locked || multi || active.type === 'textbox';
+    document.getElementById('obj-rotate-ccw').disabled = locked || multi;
+    document.getElementById('obj-rotate-cw').disabled = locked || multi;
+    const allPositionLocked = objs.length > 0 && objs.every(o => o.mfcPositionLocked);
+    const lockBtn = document.getElementById('obj-position-lock');
+    lockBtn.classList.toggle('active', allPositionLocked);
+    lockBtn.setAttribute('aria-pressed', String(allPositionLocked));
+    lockBtn.innerHTML = (allPositionLocked ? LAYER_ICONS.lock : LAYER_ICONS.unlock) + (allPositionLocked ? ' Position locked' : ' Lock position');
+    note.classList.toggle('hidden', !locked || allPositionLocked);
+    note.textContent = locked ? 'Contains position-locked objects' : '';
     const uncropBtn = document.getElementById('obj-uncrop');
-    if (uncropBtn) uncropBtn.classList.toggle('hidden', !isCropped(active));
+    uncropBtn.classList.toggle('hidden', multi || !isCropped(active));
+    uncropBtn.disabled = locked;
   }
+  // Kept for callers/tests written against the former right-hand size panel.
+  const refreshObjectSizePanel = refreshSelectionBar;
 
   /** Whether an image currently has an active (non-full-frame) crop applied. */
   function isCropped(img) {
@@ -545,7 +698,7 @@ const MFC = (function () {
    * than jumping) by shifting left/top back by the crop offset as the frame expands.
    */
   function uncropImage(img) {
-    if (!isCropped(img)) return;
+    if (!isCropped(img) || refuseLocked(img, 'resized')) return;
     const entry = registry[img.mfcId];
     const fullW = Math.max(1, Math.round(entry.rawImage.width * entry.workingScale));
     const fullH = Math.max(1, Math.round(entry.rawImage.height * entry.workingScale));
@@ -561,55 +714,79 @@ const MFC = (function () {
     canvas.fire('object:modified', { target: img });
     updateScaleBarsForImage(img);
     followSourceImage(img);
-    refreshObjectSizePanel();
+    refreshSelectionBar();
   }
 
   /** Rotate the selected object by a relative amount (e.g. ±90°), wrapped to 0-359. */
   function rotateSelected(deltaDeg) {
     const active = canvas.getActiveObject();
-    if (!active) return;
+    if (!active || active.type === 'activeSelection' || refuseLocked(active, 'rotated')) return;
     let a = ((active.angle || 0) + deltaDeg) % 360;
     if (a < 0) a += 360;
+    const center = active.getCenterPoint();
     active.set('angle', a);
+    active.setPositionByOrigin(center, 'center', 'center');
     active.setCoords();
     canvas.requestRenderAll();
-    canvas.fire('object:modified', { target: active });
-    refreshObjectSizePanel();
     if (active.mfcType === 'mfcImage') syncAttachments(active);
+    canvas.fire('object:modified', { target: active });
   }
 
   function setObjectAngle(deg) {
     const active = canvas.getActiveObject();
-    if (!active) return;
+    if (!active || active.type === 'activeSelection' || refuseLocked(active, 'rotated')) { refreshSelectionBar(); return; }
+    const center = active.getCenterPoint();
     active.set('angle', ((deg % 360) + 360) % 360);
+    active.setPositionByOrigin(center, 'center', 'center');
     active.setCoords();
     canvas.requestRenderAll();
-    canvas.fire('object:modified', { target: active });
     if (active.mfcType === 'mfcImage') syncAttachments(active);
+    canvas.fire('object:modified', { target: active });
   }
 
-  function applyObjectSizeFromFields() {
+  /** W/H fields: text boxes resize their box only (font size untouched); everything else is scaled. */
+  function applyObjectSizeFromFields(changed = 'width') {
     const active = canvas.getActiveObject();
     if (!active || active.type === 'activeSelection') return;
+    if (refuseLocked(active, 'resized')) { refreshSelectionBar(); return; }
     const w = parseFloat(document.getElementById('obj-width').value);
     const h = parseFloat(document.getElementById('obj-height').value);
-    const lockAspect = document.getElementById('obj-lock-aspect').checked;
-    if (!w || !h) return;
+    if (!(w > 0) || !(h > 0)) { refreshSelectionBar(); return; }
+    if (active.type === 'textbox') { applyTextBoxSize(changed, changed === 'height' ? h : w); return; }
 
-    if (lockAspect) {
-      const ratio = active.getScaledWidth() / active.getScaledHeight();
-      const target = document.activeElement && document.activeElement.id === 'obj-height' ? h * ratio : w;
-      const targetH = document.activeElement && document.activeElement.id === 'obj-height' ? h : w / ratio;
-      active.set({ scaleX: target / active.width, scaleY: targetH / active.height });
-      document.getElementById('obj-width').value = Math.round(active.getScaledWidth());
-      document.getElementById('obj-height').value = Math.round(active.getScaledHeight());
-    } else {
-      active.set({ scaleX: w / active.width, scaleY: h / active.height });
+    const current = objectSize(active);
+    let targetW = w, targetH = h;
+    if (document.getElementById('obj-lock-aspect').checked) {
+      const ratio = current.width / current.height;
+      if (changed === 'height') targetW = h * ratio; else targetH = w / ratio;
     }
+    // Keep the top-left of the bounding box where it was.
+    const before = active.getBoundingRect(true, true);
+    active.set({ scaleX: active.scaleX * targetW / current.width, scaleY: active.scaleY * targetH / current.height });
     active.setCoords();
+    const after = active.getBoundingRect(true, true);
+    active.set({ left: active.left + before.left - after.left, top: active.top + before.top - after.top });
+    active.setCoords();
+    if (active.mfcType === 'insetContour') syncInsetFromContour(active);
+    if (active.mfcType === 'mfcImage') syncAttachments(active);
     canvas.requestRenderAll();
     canvas.fire('object:modified', { target: active });
-    if (active.mfcType === "mfcImage") { updateScaleBarsForImage(active); followSourceImage(active); }
+  }
+
+  /** X/Y fields move the selection's bounding box to the typed document coordinates. */
+  function applyObjectPositionFromFields() {
+    const active = canvas.getActiveObject();
+    if (!active) return;
+    if (refuseLocked(active, 'moved')) { refreshSelectionBar(); return; }
+    const x = parseFloat(document.getElementById('obj-x').value), y = parseFloat(document.getElementById('obj-y').value);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) { refreshSelectionBar(); return; }
+    const box = active.getBoundingRect(true, true);
+    active.set({ left: active.left + x - box.left, top: active.top + y - box.top });
+    active.setCoords();
+    const moved = active.type === 'activeSelection' ? active.getObjects() : [active];
+    moved.forEach(o => { if (o.mfcType === 'mfcImage') syncAttachments(o); if (o.mfcType === 'insetContour') syncInsetFromContour(o); });
+    canvas.requestRenderAll();
+    canvas.fire('object:modified', { target: active });
   }
 
   // ---- text panel (re-populates whenever a text box is selected/reselected) ----
@@ -621,7 +798,8 @@ const MFC = (function () {
     const active = boxes[0]; // representative values shown when multiple are selected — edits still apply to every selected box, see applyTextStyle/applyTextBorder/applyTextAlign
 
     document.getElementById('text-font').value = active.fontFamily || 'Arial';
-    document.getElementById('text-size').value = Math.round(active.fontSize || 24);
+    const sizeField = document.getElementById('text-size');
+    if (document.activeElement !== sizeField) sizeField.value = Math.round(effectiveFontSize(active));
     document.getElementById('text-color').value = /^#/.test(active.fill) ? active.fill : '#000000';
     const hasBg = active.backgroundColor && /^#/.test(active.backgroundColor);
     document.getElementById('text-bg-enabled').checked = !!hasBg;
@@ -634,31 +812,67 @@ const MFC = (function () {
     document.getElementById('text-underline').classList.toggle('active', !!active.underline);
     ['left', 'center', 'right'].forEach(a =>
       document.getElementById('text-align-' + a).classList.toggle('active', (active.textAlign || 'left') === a));
-
-    // Box width/height are inherently per-object — showing/editing them only makes sense
-    // for a single selected text box, unlike the shared style properties above.
-    const sizeFieldsHidden = boxes.length > 1;
-    document.getElementById('text-width').closest('label').classList.toggle('hidden', sizeFieldsHidden);
-    document.getElementById('text-height').closest('label').classList.toggle('hidden', sizeFieldsHidden);
-    if (!sizeFieldsHidden) {
-      document.getElementById('text-width').value = Math.round(active.getScaledWidth());
-      document.getElementById('text-height').value = Math.round(active.getScaledHeight());
-    }
+    ['top', 'middle', 'bottom'].forEach(a =>
+      document.getElementById('text-valign-' + a).classList.toggle('active', (active.mfcVAlign || 'top') === a));
   }
 
+  /** The size the glyphs are actually drawn at: the style under the caret/selection while editing, else the box fontSize, times any not-yet-normalized scale (projects from earlier versions may still carry one). */
+  function effectiveFontSize(box) {
+    let size = box.fontSize || 24;
+    if (box.isEditing && box.getSelectionStyles) {
+      const style = box.getSelectionStyles(box.selectionStart, box.selectionStart + 1)[0];
+      if (style && style.fontSize) size = style.fontSize;
+    }
+    return size * Math.abs(box.scaleY || 1);
+  }
+
+  /** Folds a text box's scale into fontSize (and character styles), width and box height, leaving scale at 1. Returns whether anything changed. */
+  function normalizeTextScale(box) {
+    const sx = Math.abs(box.scaleX || 1), sy = Math.abs(box.scaleY || 1);
+    if (Math.abs(sx - 1) < 1e-9 && Math.abs(sy - 1) < 1e-9) return false;
+    Object.values(box.styles || {}).forEach(line => Object.values(line).forEach(style => {
+      if (style.fontSize) style.fontSize = Math.max(1, style.fontSize * sy);
+    }));
+    const boxHeight = box.mfcBoxHeight ? box.mfcBoxHeight * sy : null;
+    box.set({ fontSize: Math.max(1, Math.round(box.fontSize * sy)), width: Math.max(10, box.width * sx),
+      scaleX: 1, scaleY: 1 });
+    if (boxHeight) box.set('mfcBoxHeight', boxHeight);
+    box.initDimensions();
+    box.setCoords();
+    return true;
+  }
+
+  /** Resizes the text box only — the font size never changes. Height sets a minimum box height; the box still grows to fit its text. */
   function applyTextBoxSize(prop, value) {
     const active = canvas.getActiveObject();
-    if (!active || active.type !== 'textbox') return;
-    if (prop === 'width') {
-      // side-handle equivalent: reflow text into the new width at scale 1
-      active.set({ width: Math.max(20, value / (active.scaleX || 1)) });
-    } else if (prop === 'height') {
-      // vertical stretch, matching the top/bottom drag-handle behavior
-      active.set({ scaleY: Math.max(0.05, value / active.height) });
-    }
+    if (!active || active.type !== 'textbox' || !(value > 0)) return;
+    if (refuseLocked(active, 'resized')) { refreshSelectionBar(); return; }
+    normalizeTextScale(active);
+    if (prop === 'width') active.set({ width: Math.max(10, value) });
+    else if (prop === 'height') active.set('mfcBoxHeight', value);
     active.setCoords();
     canvas.requestRenderAll();
     canvas.fire('object:modified', { target: active });
+    refreshTextPanel();
+  }
+
+  function applyTextVerticalAlign(align) {
+    const boxes = getSelectedTextboxes();
+    if (!boxes.length) return;
+    boxes.forEach(box => { box.mfcVAlign = align; box.dirty = true; });
+    canvas.requestRenderAll();
+    canvas.fire('object:modified', { target: canvas.getActiveObject() });
+    refreshTextPanel();
+  }
+
+  /** Centers the text both ways inside its box (C1). */
+  function centerTextInBox() {
+    const boxes = getSelectedTextboxes();
+    if (!boxes.length) return;
+    boxes.forEach(box => { if (box.isEditing) box.exitEditing(); box.set('textAlign', 'center'); box.mfcVAlign = 'middle'; box.dirty = true; });
+    canvas.requestRenderAll();
+    canvas.fire('object:modified', { target: canvas.getActiveObject() });
+    refreshTextPanel();
   }
 
   // ---- crop tool ----
@@ -671,6 +885,7 @@ const MFC = (function () {
       MFC_UI.toast('Select an image first to crop it.');
       return;
     }
+    if (refuseLocked(active, 'cropped')) return;
     cropTargetImg = active;
     document.getElementById('panel-crop').classList.remove('hidden');
 
@@ -766,7 +981,10 @@ const MFC = (function () {
   function attachTextListeners(t) {
     t.on('selection:changed', () => {
       if (t.isEditing) lastTextSelection = { id: t.mfcId, start: t.selectionStart, end: t.selectionEnd };
+      refreshTextPanel();
     });
+    t.on('changed', () => refreshSelectionBar());
+    if (t.mfcBoxHeight) { t.initDimensions(); t.setCoords(); }
     t.on('editing:exited', () => { refreshTextPanel(); });
     t.on('editing:entered', () => { refreshTextPanel(); });
     installTextBorderRenderer(t);
@@ -796,6 +1014,55 @@ const MFC = (function () {
       return svg;
     }
   });
+
+  // ---- text box geometry: a real box whose size is independent of the font size ----
+  // mfcBoxHeight is a minimum box height (the box still grows to fit its text) and
+  // mfcVAlign ('top' | 'middle' | 'bottom') places the text block inside it. Both are
+  // optional, so projects saved before they existed load and render unchanged.
+  const TextboxProto = fabric.Textbox.prototype;
+  TextboxProto._dimensionAffectingProps = TextboxProto._dimensionAffectingProps.concat(['mfcBoxHeight']);
+  const baseTextboxInitDimensions = TextboxProto.initDimensions;
+  TextboxProto.initDimensions = function () {
+    if (this.__skipDimension) return;
+    baseTextboxInitDimensions.call(this);
+    this._mfcTextHeight = this.height;
+    if (this.mfcBoxHeight > this.height) this.height = this.mfcBoxHeight;
+  };
+  TextboxProto._mfcVerticalOffset = function () {
+    const extra = this.height - (this._mfcTextHeight ?? this.height);
+    return extra > 0 ? extra * ({ middle: 0.5, bottom: 1 }[this.mfcVAlign] || 0) : 0;
+  };
+  // Text drawing, decorations, the editing caret and selection all start from _getTopOffset.
+  TextboxProto._getTopOffset = function () { return -this.height / 2 + this._mfcVerticalOffset(); };
+  // SVG (and therefore PDF) export: the background still covers the whole box, the lines start at the offset.
+  TextboxProto._getSVGLeftTopOffsets = function () {
+    return { textLeft: -this.width / 2, textTop: this._getTopOffset(), lineTop: this.getHeightOfLine(0) };
+  };
+  const baseSelectionFromPointer = TextboxProto.getSelectionStartFromPointer;
+  TextboxProto.getSelectionStartFromPointer = function (e) {
+    const offset = this._mfcVerticalOffset();
+    if (!offset) return baseSelectionFromPointer.call(this, e);
+    const localPointer = this.getLocalPointer;
+    this.getLocalPointer = function (...args) { const p = localPointer.apply(this, args); p.y -= offset * this.scaleY; return p; };
+    try { return baseSelectionFromPointer.call(this, e); } finally { delete this.getLocalPointer; }
+  };
+  // Top/bottom handles resize the box height (like the side handles already resize its
+  // width); only the corner handles scale the text itself.
+  function changeTextBoxHeight(eventData, transform, x, y) {
+    const target = transform.target;
+    const localPoint = fabric.controlsUtils.getLocalPoint(transform, transform.originX, transform.originY, x, y);
+    const multiplier = transform.originX === 'center' && transform.originY === 'center' ? 2 : 1;
+    const oldHeight = target.height;
+    target.set('mfcBoxHeight', Math.max(1, Math.abs(localPoint.y * multiplier / (target.scaleY || 1))));
+    return target.height !== oldHeight;
+  }
+  const textBoxHeightHandler = fabric.controlsUtils.wrapWithFireEvent('resizing',
+    fabric.controlsUtils.wrapWithFixedAnchor(changeTextBoxHeight));
+  TextboxProto.controls = { ...TextboxProto.controls,
+    mt: new fabric.Control({ x: 0, y: -0.5, actionHandler: textBoxHeightHandler,
+      cursorStyleHandler: fabric.controlsUtils.scaleSkewCursorStyleHandler, actionName: 'resizing' }),
+    mb: new fabric.Control({ x: 0, y: 0.5, actionHandler: textBoxHeightHandler,
+      cursorStyleHandler: fabric.controlsUtils.scaleSkewCursorStyleHandler, actionName: 'resizing' }) };
 
   /**
    * Fabric's native stroke/strokeWidth on a Textbox outlines each glyph, not the box —
@@ -875,7 +1142,8 @@ const MFC = (function () {
     } else if (currentTool === 'shape' && !opt.target) {
       startShapeDrag(canvas.getPointer(opt.e), opt.e);
     } else if (currentTool === 'inset' && opt.target && opt.target.mfcType === 'mfcImage') {
-      startInsetDrag(canvas.getPointer(opt.e), opt.target);
+      if (document.getElementById('inset-fixed-size').checked) placeFixedInsetContour(canvas.getPointer(opt.e), opt.target);
+      else startInsetDrag(canvas.getPointer(opt.e), opt.target);
     }
   }
 
@@ -899,10 +1167,37 @@ const MFC = (function () {
     };
   }
 
-  function startInsetDrag(pointer, sourceImg) {
+  // ---- exact-size insets: the size fields double as "same size as last inset" memory ----
+  const INSET_PREFS_KEY = 'fluoforge-inset-size';
+  function loadInsetSizePreferences() {
+    let prefs = null;
+    try { prefs = JSON.parse(localStorage.getItem(INSET_PREFS_KEY) || 'null'); } catch (_) { /* Preferences are optional. */ }
+    if (!prefs) return;
+    document.getElementById('inset-fixed-size').checked = !!prefs.fixed;
+    if (prefs.width > 0) document.getElementById('inset-fixed-w').value = prefs.width;
+    if (prefs.height > 0) document.getElementById('inset-fixed-h').value = prefs.height;
+    if (prefs.magnification > 0) document.getElementById('inset-magnification').value = prefs.magnification;
+  }
+  function saveInsetSizePreferences() {
+    const size = readInsetFixedSize();
+    try { localStorage.setItem(INSET_PREFS_KEY, JSON.stringify({ fixed: document.getElementById('inset-fixed-size').checked,
+      width: size.width, height: size.height, magnification: readInsetMagnification() })); } catch (_) { /* Preferences are optional. */ }
+  }
+  function readInsetFixedSize() {
+    return { width: Math.max(2, parseFloat(document.getElementById('inset-fixed-w').value) || 100),
+      height: Math.max(2, parseFloat(document.getElementById('inset-fixed-h').value) || 100) };
+  }
+  function readInsetMagnification() { return Math.max(0.05, parseFloat(document.getElementById('inset-magnification').value) || 1); }
+  function rememberInsetSize(width, height) {
+    document.getElementById('inset-fixed-w').value = Math.round(width * 100) / 100;
+    document.getElementById('inset-fixed-h').value = Math.round(height * 100) / 100;
+    saveInsetSizePreferences();
+  }
+
+  function makeInsetContour(left, top, width, height, sourceImg) {
     const style = readInsetContourFormValues();
     const rect = new fabric.Rect({
-      left: pointer.x, top: pointer.y, width: 1, height: 1,
+      left, top, width, height,
       fill: 'transparent', stroke: style.stroke, strokeWidth: style.strokeWidth, strokeDashArray: style.strokeDashArray,
       strokeUniform: true,
       cornerStyle: 'circle', transparentCorners: false, cornerColor: '#5b8cff', borderColor: '#5b8cff'
@@ -911,7 +1206,48 @@ const MFC = (function () {
     rect.mfcType = 'insetContour';
     rect.mfcInsetSourceId = sourceImg.mfcId;
     canvas.add(rect);
+    return rect;
+  }
+
+  function startInsetDrag(pointer, sourceImg) {
+    const rect = makeInsetContour(pointer.x, pointer.y, 1, 1, sourceImg);
     insetDrag = { rect, startX: pointer.x, startY: pointer.y };
+  }
+
+  /** Places an outline of exactly the typed size, centered on the click and kept inside the image where possible. */
+  function placeFixedInsetContour(pointer, sourceImg) {
+    const { width, height } = readInsetFixedSize();
+    const b = canvasBounds(sourceImg);
+    const clamp = (v, min, max) => max < min ? min : Math.min(Math.max(v, min), max);
+    const left = clamp(pointer.x - width / 2, b.left, b.left + b.width - width);
+    const top = clamp(pointer.y - height / 2, b.top, b.top + b.height - height);
+    finishInsetContour(makeInsetContour(left, top, width, height, sourceImg));
+  }
+
+  function finishInsetContour(rect) {
+    applyLockState(rect);
+    canvas.setActiveObject(rect);
+    syncInsetFromContour(rect); // establishes mfcRelX/Y/W/H immediately, so followSourceImage works even before "Create inset" is pressed
+    rememberInsetSize(rect.width * rect.scaleX, rect.height * rect.scaleY);
+    canvas.requestRenderAll();
+    pushHistory();
+    refreshInsetPanel();
+    setTool('select');
+  }
+
+  /** Gives the selected outline exactly the typed size, keeping its center. */
+  function applyExactSizeToSelectedContour() {
+    const active = canvas.getActiveObject();
+    if (!active || active.mfcType !== 'insetContour' || refuseLocked(active, 'resized')) return;
+    const { width, height } = readInsetFixedSize();
+    const center = active.getCenterPoint();
+    active.set({ width, height, scaleX: 1, scaleY: 1 });
+    active.setPositionByOrigin(center, 'center', 'center');
+    active.setCoords();
+    syncInsetFromContour(active);
+    saveInsetSizePreferences();
+    canvas.requestRenderAll();
+    canvas.fire('object:modified', { target: active });
   }
 
   /** Live-apply the panel's current stroke settings to the selected inset contour. */
@@ -929,6 +1265,7 @@ const MFC = (function () {
     const panel = document.getElementById('panel-inset');
     if (!panel) return;
     panel.classList.toggle('hidden', !(isContour || currentTool === 'inset'));
+    document.getElementById('inset-apply-size').classList.toggle('hidden', !isContour);
     const btn = document.getElementById('inset-create');
     if (btn) {
       btn.classList.toggle('hidden', !isContour);
@@ -968,8 +1305,9 @@ const MFC = (function () {
     const srcBox = canvasBounds(srcImg);
     const cropX = contourRect.mfcCropX, cropY = contourRect.mfcCropY;
     const cropW = contourRect.mfcCropW, cropH = contourRect.mfcCropH;
-    const w = cropW * srcBox.width / srcImg.width;
-    const h = cropH * srcBox.height / srcImg.height;
+    const magnification = readInsetMagnification();
+    const w = cropW * srcBox.width / srcImg.width * magnification;
+    const h = cropH * srcBox.height / srcImg.height * magnification;
 
     let insetImg = contourRect.mfcInsetTargetId
       ? canvas.getObjects().find(o => o.mfcId === contourRect.mfcInsetTargetId) : null;
@@ -1203,12 +1541,7 @@ const MFC = (function () {
         canvas.requestRenderAll();
         return;
       }
-      canvas.setActiveObject(rect);
-      syncInsetFromContour(rect); // establishes mfcRelX/Y/W/H immediately, so followSourceImage works even before "Create inset" is pressed
-      canvas.requestRenderAll();
-      pushHistory();
-      refreshInsetPanel();
-      setTool('select');
+      finishInsetContour(rect);
       return;
     }
     if (!shapeDrag) return;
@@ -1608,6 +1941,7 @@ const MFC = (function () {
 
   function enterPathEdit(path=canvas.getActiveObject()) {
     if(!path||path.mfcShapeKind!=='path')return false;
+    if(refuseLocked(path,'reshaped'))return false;
     path.__mfcNodeEdit=true;path.__mfcSelectedNode=Math.min(path.__mfcSelectedNode||0,path.mfcPathNodes.length-1);
     path.controls=buildNodeControls(path);path.hasBorders=false;path.lockMovementX=true;path.lockMovementY=true;
     canvas.setActiveObject(path);canvas.requestRenderAll();refreshPathPanel();MFC_UI.focusPanel('panel-path');setPathStatus('Node editing active. Double-click a segment to insert a node.',true);return true;
@@ -1616,7 +1950,7 @@ const MFC = (function () {
   function exitPathEdit(path=canvas.getActiveObject()) {
     if(!path||path.mfcShapeKind!=='path')return false;
     path.__mfcNodeEdit=false;path.controls=path.__mfcStandardControls||fabric.Object.prototype.controls;path.hasBorders=true;
-    path.lockMovementX=false;path.lockMovementY=false;path.setCoords();canvas.requestRenderAll();refreshPathPanel();return true;
+    applyLockState(path);path.setCoords();canvas.requestRenderAll();refreshPathPanel();return true;
   }
 
   function updatePathControls(path) { if(path&&path.__mfcNodeEdit)path.controls=buildNodeControls(path); }
@@ -1713,7 +2047,7 @@ const MFC = (function () {
   function onCanvasDoubleClick(opt) {
     if(pathDraft){finishPathDrawing(false);return;}
     const target=opt.target;
-    if(target&&target.mfcShapeKind==='path'){
+    if(target&&target.mfcShapeKind==='path'&&!isTransformLocked(target)){
       canvas.setActiveObject(target);enterPathEdit(target);insertPathNode(target,canvas.getPointer(opt.e));
     }
   }
@@ -1762,11 +2096,16 @@ const MFC = (function () {
     }
     if (box.isEditing) box.exitEditing(); // avoid racing Fabric's async editing-exit (captured sel above first)
 
+    if (prop === 'fontSize') normalizeTextScale(box);
     if (sel) {
       box.setSelectionStyles({ [prop]: value }, sel.start, sel.end);
     } else {
+      // A whole-box value must win over older per-character overrides, otherwise the
+      // field would show a size that isn't what's drawn.
+      if (box.removeStyle) box.removeStyle(prop);
       box.set(prop, value);
     }
+    if (prop === 'fontSize') box.initDimensions();
     box.dirty = true;
     box.setCoords();
   }
@@ -1774,6 +2113,7 @@ const MFC = (function () {
   function applyTextStyle(prop, value) {
     const boxes = getSelectedTextboxes();
     if (!boxes.length) return;
+    if (prop === 'fontSize' && !(value > 0)) { refreshTextPanel(); return; }
     // Highlighted-word-range styling only applies when the selection IS a single text box
     // being edited directly — with several boxes selected as a group there's no shared
     // "highlighted range" across separate objects, so each whole box gets the style.
@@ -1781,6 +2121,7 @@ const MFC = (function () {
     boxes.forEach(box => applyTextStyleToBox(box, prop, value, isSingle));
     canvas.renderAll(); // synchronous — don't rely solely on the scheduled requestRenderAll
     canvas.fire('object:modified', { target: canvas.getActiveObject() });
+    refreshTextPanel();
   }
 
   function applyTextAlign(align) {
@@ -2024,7 +2365,7 @@ const MFC = (function () {
   /** Moves the current selection by (dx,dy) doc-px — works for images/text/shapes/groups/multi-selection alike, since they all expose the same left/top. Snaps to nearby edges unless snap=false. Debounces the history push so holding an arrow key doesn't spam undo steps. */
   function nudgeSelection(dx, dy, snap) {
     const active = canvas.getActiveObject();
-    if (!active || active === cropRect) return;
+    if (!active || active === cropRect || refuseLocked(active, 'moved')) return;
     active.set({ left: active.left + dx, top: active.top + dy });
     // Keyboard steps must pass through snap lines; snapping a 1px nudge can
     // otherwise cancel the same movement forever. Mouse dragging still snaps.
@@ -2035,7 +2376,9 @@ const MFC = (function () {
     if (active.type === 'activeSelection') {
       active.getObjects().forEach(o => { if (o.mfcType === 'mfcImage') syncAttachments(o); });
     }
+    if (active.mfcType === 'insetContour') syncInsetFromContour(active);
     canvas.requestRenderAll();
+    refreshSelectionBar();
 
     clearTimeout(nudgeHistoryTimer);
     nudgeHistoryTimer = setTimeout(() => pushHistory(), 300);
@@ -2043,7 +2386,10 @@ const MFC = (function () {
 
   // ---- layers panel ----
   function layerLabel(o) {
-    if (o.mfcType === 'mfcImage') return (o.mfcFileName || 'Image') + (o.mfcIsInset ? ' (inset)' : '');
+    if (o.mfcType === 'mfcImage') {
+      const name = o.mfcFileName || 'Image';
+      return name + (o.mfcIsInset && !/\(inset\)$/.test(name) ? ' (inset)' : '');
+    }
     if (o.type === 'textbox') {
       const t = (o.text || '').replace(/\n/g, ' ').trim();
       return 'Text: "' + (t.length > 18 ? t.slice(0, 18) + '…' : t || '(empty)') + '"';
@@ -2055,11 +2401,21 @@ const MFC = (function () {
     return o.type ? (o.type[0].toUpperCase() + o.type.slice(1)) : 'Object';
   }
 
+  const LAYER_ICONS = {
+    eye: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>',
+    eyeOff: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.9 17.9A10 10 0 0 1 12 19c-7 0-11-7-11-7a18.5 18.5 0 0 1 5.1-5.9"/><path d="M9.9 4.2A9 9 0 0 1 12 4c7 0 11 7 11 7a18.5 18.5 0 0 1-2.2 3.2"/><path d="M14.1 14.1a3 3 0 1 1-4.2-4.2"/><line x1="1" y1="1" x2="23" y2="23"/></svg>',
+    lock: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>',
+    unlock: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 7.5-2"/></svg>',
+    position: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2v5M12 17v5M2 12h5M17 12h5"/><circle cx="12" cy="12" r="4"/></svg>'
+  };
+  function layerObjects() { return canvas.getObjects().filter(o => !o.mfcIsPageBounds && !o.mfcIsPathHelper && !o.mfcIsPathDraft); }
+
   function refreshLayersPanel() {
     const listEl = document.getElementById('layers-list');
     if (!listEl) return;
-    const objs = canvas.getObjects().filter(o => !o.mfcIsPageBounds && !o.mfcIsPathHelper && !o.mfcIsPathDraft);
+    const objs = layerObjects();
     const activeIds = new Set((canvas.getActiveObjects ? canvas.getActiveObjects() : []).map(o => o.mfcId));
+    const scrollTop = listEl.scrollTop;
 
     if (!objs.length) {
       listEl.innerHTML = '<p class="hint">No objects on the canvas yet.</p>';
@@ -2071,35 +2427,57 @@ const MFC = (function () {
     listEl.innerHTML = '';
     for (let i = objs.length - 1; i >= 0; i--) {
       const o = objs[i];
+      const hidden = o.visible === false, locked = !!o.mfcLocked, fixed = !!o.mfcPositionLocked;
       const row = document.createElement('div');
-      row.className = 'layer-row' + (activeIds.has(o.mfcId) ? ' active' : '');
+      row.className = 'layer-row' + (activeIds.has(o.mfcId) ? ' active' : '') + (hidden ? ' layer-hidden' : '') + (locked ? ' layer-locked' : '');
       row.innerHTML = `
-        <button class="layer-eye" title="${o.visible === false ? 'Show' : 'Hide'}">${o.visible === false ? '&#128065;&#8203;' : '&#128065;'}</button>
-        <button class="layer-lock" title="${o.mfcLocked ? 'Unlock' : 'Lock'}">${o.mfcLocked ? '&#128274;' : '&#128275;'}</button>
-        <span class="layer-name" title="${layerLabel(o)}">${layerLabel(o)}</span>
+        <button class="layer-eye layer-icon ${hidden ? 'off' : ''}" data-state="${hidden ? 'hidden' : 'visible'}" aria-pressed="${hidden}" title="${hidden ? 'Hidden — click to show' : 'Visible — click to hide'}">${hidden ? LAYER_ICONS.eyeOff : LAYER_ICONS.eye}</button>
+        <button class="layer-lock layer-icon ${locked ? 'on' : 'off'}" data-state="${locked ? 'locked' : 'unlocked'}" aria-pressed="${locked}" title="${locked ? 'Layer locked (nothing can be changed) — click to unlock' : 'Lock layer (blocks selecting, moving and editing)'}">${locked ? LAYER_ICONS.lock : LAYER_ICONS.unlock}</button>
+        <button class="layer-position-lock layer-icon ${fixed ? 'on' : 'off'}" data-state="${fixed ? 'locked' : 'unlocked'}" aria-pressed="${fixed}" title="${fixed ? 'Position/size locked — click to unlock' : 'Lock position and size (channels and styles stay editable)'}">${LAYER_ICONS.position}</button>
+        <span class="layer-name"></span>
         <button class="layer-up" title="Move forward">&#9650;</button>
         <button class="layer-down" title="Move backward">&#9660;</button>
       `;
-      if (o.visible === false) row.classList.add('layer-hidden');
-      row.querySelector('.layer-name').addEventListener('click', () => selectLayer(o));
+      const name = row.querySelector('.layer-name');
+      name.textContent = layerLabel(o); name.title = layerLabel(o);
+      name.addEventListener('click', () => selectLayer(o));
       row.querySelector('.layer-eye').addEventListener('click', (e) => { e.stopPropagation(); toggleLayerVisibility(o); });
       row.querySelector('.layer-lock').addEventListener('click', (e) => { e.stopPropagation(); toggleLayerLock(o); });
+      row.querySelector('.layer-position-lock').addEventListener('click', (e) => { e.stopPropagation(); toggleLayerPositionLock(o); });
       row.querySelector('.layer-up').addEventListener('click', (e) => { e.stopPropagation(); moveLayer(o, 'up'); });
       row.querySelector('.layer-down').addEventListener('click', (e) => { e.stopPropagation(); moveLayer(o, 'down'); });
       listEl.appendChild(row);
     }
+    listEl.scrollTop = scrollTop;
   }
 
   function selectLayer(o) {
     if (o.mfcLocked) { MFC_UI.toast('This layer is locked — unlock it first to select it.'); return; }
+    if (o.visible === false) { MFC_UI.toast('This layer is hidden — show it first to select it.'); return; }
     canvas.discardActiveObject();
     canvas.setActiveObject(o);
     canvas.requestRenderAll();
   }
 
+  /** Drops o from the current selection (if it is part of it) — used before hiding or locking it. */
+  function releaseFromSelection(o) {
+    if (o.isEditing) o.exitEditing();
+    if (canvas.getActiveObjects().includes(o)) canvas.discardActiveObject();
+  }
+
   function toggleLayerVisibility(o) {
-    o.visible = o.visible === false ? true : false;
-    if (!o.visible && canvas.getActiveObject() === o) canvas.discardActiveObject();
+    o.visible = o.visible === false;
+    if (!o.visible) releaseFromSelection(o);
+    canvas.requestRenderAll();
+    pushHistory();
+    refreshLayersPanel();
+  }
+
+  function setAllLayersVisible(visible) {
+    const objs = layerObjects();
+    if (!objs.length) return;
+    if (!visible) canvas.discardActiveObject();
+    objs.forEach(o => { o.visible = visible; });
     canvas.requestRenderAll();
     pushHistory();
     refreshLayersPanel();
@@ -2107,12 +2485,20 @@ const MFC = (function () {
 
   function toggleLayerLock(o) {
     o.mfcLocked = !o.mfcLocked;
-    o.selectable = !o.mfcLocked;
-    o.evented = !o.mfcLocked;
-    if (o.mfcLocked && canvas.getActiveObject() === o) canvas.discardActiveObject();
+    if (o.mfcLocked) releaseFromSelection(o);
+    applyLockState(o);
     canvas.requestRenderAll();
     pushHistory();
     refreshLayersPanel();
+  }
+
+  function toggleLayerPositionLock(o) {
+    setPositionLock(o, !o.mfcPositionLocked);
+    applySelectionLock();
+    canvas.requestRenderAll();
+    pushHistory();
+    refreshLayersPanel();
+    refreshSelectionBar();
   }
 
   /** direction: 'up' (toward front, one step) or 'down' (toward back, one step). */
@@ -2138,6 +2524,8 @@ const MFC = (function () {
       MFC_UI.toast('Select 2 or more objects to group.');
       return;
     }
+    // A group can be moved as a whole, which would carry position-locked members with it.
+    if (refuseLocked(active, 'grouped')) return;
     const group = active.toGroup(); // Fabric's own, well-tested ActiveSelection -> Group conversion
     group.mfcId = 'grp' + (nextId++);
     group.mfcType = 'group';
@@ -2170,8 +2558,10 @@ const MFC = (function () {
     const minY = Math.min(...bounds.map(b => b.top));
     const maxY = Math.max(...bounds.map(b => b.top + b.height));
 
+    // Locked objects still count as alignment references but are never moved.
     objs.forEach((o, i) => {
       const b = bounds[i];
+      if (isTransformLocked(o)) return;
       switch (mode) {
         case 'left': o.left += (minX - b.left); break;
         case 'right': o.left += (maxX - (b.left + b.width)); break;
@@ -2189,7 +2579,7 @@ const MFC = (function () {
       const totalW = sorted.reduce((s, x) => s + x.b.width, 0);
       const gap = (totalSpan - totalW) / (sorted.length - 1);
       let cursor = sorted[0].b.left;
-      sorted.forEach(({ o, b }) => { o.left += (cursor - b.left); cursor += b.width + gap; o.setCoords(); });
+      sorted.forEach(({ o, b }) => { if (!isTransformLocked(o)) { o.left += (cursor - b.left); o.setCoords(); } cursor += b.width + gap; });
     }
     if (mode === 'distV' && objs.length > 2) {
       const sorted = objs.map((o, i) => ({ o, b: bounds[i] })).sort((a, b) => a.b.top - b.b.top);
@@ -2197,10 +2587,12 @@ const MFC = (function () {
       const totalH = sorted.reduce((s, x) => s + x.b.height, 0);
       const gap = (totalSpan - totalH) / (sorted.length - 1);
       let cursor = sorted[0].b.top;
-      sorted.forEach(({ o, b }) => { o.top += (cursor - b.top); cursor += b.height + gap; o.setCoords(); });
+      sorted.forEach(({ o, b }) => { if (!isTransformLocked(o)) { o.top += (cursor - b.top); o.setCoords(); } cursor += b.height + gap; });
     }
 
+    objs.forEach(o => { if (o.mfcType === 'mfcImage') syncAttachments(o); });
     canvas.requestRenderAll();
+    refreshSelectionBar();
     pushHistory();
   }
 
@@ -2244,7 +2636,10 @@ const MFC = (function () {
     const { rows, cols, cellW, cellH, gap, headerRow, headerCol } = opts;
     let imgs = canvas.getActiveObjects().filter(o => o.mfcType === 'mfcImage');
     if (imgs.length < 2) imgs = canvas.getObjects().filter(o => o.mfcType === 'mfcImage');
-    if (!imgs.length) { MFC_UI.toast('No images to arrange — import or select some first.'); return; }
+    const lockedCount = imgs.filter(isTransformLocked).length;
+    imgs = imgs.filter(o => !isTransformLocked(o));
+    if (lockedCount) MFC_UI.toast(lockedCount + ' locked image(s) were left in place.');
+    if (!imgs.length) { MFC_UI.toast('No unlocked images to arrange — import, select or unlock some first.'); return; }
 
     const headerRowH = headerRow ? 44 : 0;
     const headerColW = headerCol ? 120 : 0;
@@ -2305,18 +2700,18 @@ const MFC = (function () {
     canvas.isDrawingMode = false;
     canvas.selection = (tool === 'select' || tool === 'scalebar');
     canvas.defaultCursor = tool === 'path' ? 'crosshair' : 'default';
-    canvas.forEachObject(o => { if (!o.mfcIsPageBounds && !o.mfcIsPathHelper && !o.mfcIsPathDraft) o.selectable = (tool === 'select' || tool === 'scalebar'); });
+    canvas.forEachObject(applyLockState);
     if (tool === 'crop') startCrop();
     else cancelCrop();
     if (tool === 'scalebar') refreshScaleBarRefList();
     if (tool !== 'shape' && shapeDrag) { canvas.remove(shapeDrag.rect); shapeDrag = null; }
     if (tool !== 'inset' && insetDrag) { canvas.remove(insetDrag.rect); insetDrag = null; }
     refreshTextPanel();
-    refreshObjectSizePanel();
+    refreshSelectionBar();
     refreshShapePanel();
     refreshPathPanel();
     refreshInsetPanel();
-    MFC_UI.focusSelection(canvas.getActiveObject(), tool, true);
+    MFC_UI.focusSelection(canvas.getActiveObject(), tool);
   }
 
   function getRegistry() { return registry; }
@@ -2332,7 +2727,10 @@ const MFC = (function () {
     groupSelection, ungroupSelection,
     applyCrop, cancelCrop, setCropAspectMode, applyCropFieldsToRect,
     applyTextStyle, applyTextAlign, applyTextBoxSize, applyTextBorder, refreshTextPanel, attachTextListeners,
-    refreshObjectSizePanel, applyObjectSizeFromFields, rotateSelected, setObjectAngle, uncropImage,
+    applyTextVerticalAlign, centerTextInBox, effectiveFontSize, normalizeTextScale,
+    refreshObjectSizePanel, refreshSelectionBar, applyObjectSizeFromFields, applyObjectPositionFromFields, rotateSelected, setObjectAngle, uncropImage,
+    applyLockState, isTransformLocked, togglePositionLockSelection, setPositionLock, toggleLayerLock, toggleLayerPositionLock,
+    toggleLayerVisibility, setAllLayersVisible,
     refreshScaleBarRefList, placeScaleBarAtCorner, placeScaleBarOnSelectedImages,
     arrangeGrid,
     applyShapeStyle, setShapeAspectMode, refreshShapePanel,
@@ -2340,7 +2738,8 @@ const MFC = (function () {
     setSelectedNodeType, setSelectedIncomingSegment, togglePathClosed, refreshPathPanel,
     finishPathDrawing, cancelPathDrawing, handlePathKey, insertPathNode,
     createInsetFromContour, refreshInsetPanel, applyInsetContourStyle, setInsetAspectMode,
-    zoomIn, zoomOut, zoomReset, updateZoomDisplay, setZoom, getZoomLevel,
+    loadInsetSizePreferences, saveInsetSizePreferences, applyExactSizeToSelectedContour,
+    zoomIn, zoomOut, zoomReset, zoomToSelection, updateZoomDisplay, setZoom, getZoomLevel,
     getRegistry, getNextIdCounter, setNextIdCounter,
     get hasDocument() { return documentOpen; },
     get currentTool() { return currentTool; }

@@ -11,11 +11,27 @@ const MFC_UI = (function () {
     document.getElementById('theme-select').value = theme;
     try { localStorage.setItem('fluoforge-theme', theme); } catch (_) { /* Preferences are optional. */ }
   }
+  // Panels only collapse/expand through their own toggle (or Collapse all). The
+  // chosen state is remembered per panel; selection never changes it.
+  const COLLAPSED_KEY = 'fluoforge-collapsed-panels';
+  function readCollapsed() {
+    try { return new Set(JSON.parse(localStorage.getItem(COLLAPSED_KEY) || '["panel-docprops"]')); }
+    catch (_) { return new Set(['panel-docprops']); }
+  }
+  function setPanelExpanded(panel, expanded, remember = true) {
+    panel.querySelector('.panel-body').hidden = !expanded;
+    panel.querySelector('.panel-toggle').setAttribute('aria-expanded', String(expanded));
+    if (!remember) return;
+    const collapsed = readCollapsed();
+    if (expanded) collapsed.delete(panel.id); else collapsed.add(panel.id);
+    try { localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...collapsed])); } catch (_) { /* Preferences are optional. */ }
+  }
   function initInspector() {
     let savedTheme;
     try { savedTheme = localStorage.getItem('fluoforge-theme'); } catch (_) { /* Use system theme. */ }
     applyTheme(savedTheme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'slate' : 'light'));
     document.getElementById('theme-select').addEventListener('change', event => applyTheme(event.target.value));
+    const collapsed = readCollapsed();
     document.querySelectorAll('#side-panel > .panel').forEach(panel => {
       const heading = panel.querySelector(':scope > h3');
       const body = document.createElement('div'); body.className = 'panel-body'; body.id = panel.id + '-body';
@@ -23,32 +39,25 @@ const MFC_UI = (function () {
       const toggle = document.createElement('button'); toggle.type = 'button'; toggle.className = 'panel-toggle';
       while (heading.firstChild) toggle.append(heading.firstChild);
       toggle.setAttribute('aria-controls', body.id);
-      toggle.setAttribute('aria-expanded', 'false'); body.hidden = true;
+      toggle.title = 'Collapse or expand this section';
       heading.append(toggle); panel.append(body);
-      toggle.addEventListener('click', () => {
-        body.hidden = !body.hidden; toggle.setAttribute('aria-expanded', String(!body.hidden));
-      });
+      setPanelExpanded(panel, !collapsed.has(panel.id), false);
+      toggle.addEventListener('click', () => setPanelExpanded(panel, body.hidden));
     });
     document.getElementById('inspector-collapse-all').addEventListener('click', () => {
-      document.querySelectorAll('#side-panel > .panel').forEach(panel => {
-        panel.querySelector('.panel-body').hidden = true;
-        panel.querySelector('.panel-toggle').setAttribute('aria-expanded', 'false');
-      });
+      document.querySelectorAll('#side-panel > .panel').forEach(panel => setPanelExpanded(panel, false));
     });
     document.getElementById('side-panel').addEventListener('focusin', event => {
       const panel = event.target.closest('.panel');
       if (panel) highlightPanel(panel);
     });
-    document.getElementById('side-panel').addEventListener('click', event => {
-      const panel = event.target.closest('.panel');
-      if (panel) highlightPanel(panel);
-    });
+
     updateDocumentState(false);
   }
+  /** Visual emphasis only: never reorders, resizes, scrolls, opens or closes a panel. */
   function highlightPanel(panel) {
     document.querySelectorAll('#side-panel > .panel').forEach(item => {
       item.classList.toggle('panel-focused', item === panel);
-      item.style.order = item === panel ? '-1' : '';
     });
     focusedPanel = panel.id;
     document.getElementById('inspector-context').textContent = panel.querySelector('.panel-toggle').textContent.trim();
@@ -58,20 +67,19 @@ const MFC_UI = (function () {
     if (!panel || panel.classList.contains('hidden')) return;
     if (focusedPanel === id && !force) return;
     highlightPanel(panel);
-    panel.querySelector('.panel-body').hidden = false;
-    panel.querySelector('.panel-toggle').setAttribute('aria-expanded', 'true');
-    document.getElementById('side-panel').scrollTop = 0;
+    // Only an explicit request (Document / Grid buttons, new figure) opens and reveals a panel.
+    if (force) { setPanelExpanded(panel, true); panel.scrollIntoView({ block: 'nearest' }); }
   }
   function focusSelection(object, tool, force = false) {
     const tools = {crop:'panel-crop',text:'panel-text',scalebar:'panel-scalebar',shape:'panel-shape',path:'panel-path',inset:'panel-inset'};
     let panel = tool !== 'select' ? tools[tool] : null;
     if (!panel && object) {
       panel = object.mfcShapeKind === 'path' ? 'panel-path' :
-        ({mfcImage:'panel-channels',text:'panel-text',scalebar:'panel-scalebar',shape:'panel-shape',insetContour:'panel-inset'})[object.mfcType] || 'panel-object';
+        ({mfcImage:'panel-channels',text:'panel-text',scalebar:'panel-scalebar',shape:'panel-shape',insetContour:'panel-inset'})[object.mfcType] || null;
     }
     if (panel) focusPanel(panel, force);
     else {
-      document.querySelectorAll('.panel-focused').forEach(item => { item.classList.remove('panel-focused'); item.style.order = ''; });
+      document.querySelectorAll('.panel-focused').forEach(item => item.classList.remove('panel-focused'));
       focusedPanel = null; document.getElementById('inspector-context').textContent = MFC.hasDocument ? 'Select an object or tool' : 'No document open';
     }
   }
@@ -300,6 +308,11 @@ window.addEventListener('DOMContentLoaded', async () => {
     const active = MFC.getCanvas().getActiveObject();
     if (active) MFC.createInsetFromContour(active);
   });
+  MFC.loadInsetSizePreferences();
+  ['inset-fixed-size', 'inset-fixed-w', 'inset-fixed-h', 'inset-magnification'].forEach(id => {
+    document.getElementById(id).addEventListener('change', () => MFC.saveInsetSizePreferences());
+  });
+  document.getElementById('inset-apply-size').addEventListener('click', () => MFC.applyExactSizeToSelectedContour());
   ['inset-stroke-color', 'inset-stroke-width', 'inset-dash'].forEach(id => {
     document.getElementById(id).addEventListener('input', () => MFC.applyInsetContourStyle());
     document.getElementById(id).addEventListener('change', () => MFC.applyInsetContourStyle());
@@ -333,8 +346,14 @@ window.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('crop-cancel').addEventListener('click', () => MFC.setTool('select'));
 
   // ---- object size panel ----
-  document.getElementById('obj-width').addEventListener('change', () => MFC.applyObjectSizeFromFields());
-  document.getElementById('obj-height').addEventListener('change', () => MFC.applyObjectSizeFromFields());
+  document.getElementById('obj-width').addEventListener('change', () => MFC.applyObjectSizeFromFields('width'));
+  document.getElementById('obj-height').addEventListener('change', () => MFC.applyObjectSizeFromFields('height'));
+  document.getElementById('obj-x').addEventListener('change', () => MFC.applyObjectPositionFromFields());
+  document.getElementById('obj-y').addEventListener('change', () => MFC.applyObjectPositionFromFields());
+  document.querySelectorAll('#selection-bar input[type=number]').forEach(input => {
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); input.blur(); } });
+  });
+  document.getElementById('obj-position-lock').addEventListener('click', () => MFC.togglePositionLockSelection());
   document.getElementById('obj-angle').addEventListener('change', (e) => MFC.setObjectAngle(parseFloat(e.target.value) || 0));
   document.getElementById('obj-rotate-ccw').addEventListener('click', () => MFC.rotateSelected(-90));
   document.getElementById('obj-rotate-cw').addEventListener('click', () => MFC.rotateSelected(90));
@@ -423,8 +442,10 @@ window.addEventListener('DOMContentLoaded', async () => {
   ['left', 'center', 'right'].forEach(a => {
     document.getElementById('text-align-' + a).addEventListener('click', () => MFC.applyTextAlign(a));
   });
-  document.getElementById('text-width').addEventListener('change', (e) => MFC.applyTextBoxSize('width', parseFloat(e.target.value)));
-  document.getElementById('text-height').addEventListener('change', (e) => MFC.applyTextBoxSize('height', parseFloat(e.target.value)));
+  ['top', 'middle', 'bottom'].forEach(a => {
+    document.getElementById('text-valign-' + a).addEventListener('click', () => MFC.applyTextVerticalAlign(a));
+  });
+  document.getElementById('text-center-both').addEventListener('click', () => MFC.centerTextInBox());
 
   // ---- grid layout panel ----
   document.getElementById('btn-grid').addEventListener('click', () => {
@@ -448,14 +469,17 @@ window.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('zoom-in').addEventListener('click', () => MFC.zoomIn());
   document.getElementById('zoom-out').addEventListener('click', () => MFC.zoomOut());
   document.getElementById('zoom-reset').addEventListener('click', () => MFC.zoomReset());
+  document.getElementById('zoom-selection').addEventListener('click', () => MFC.zoomToSelection());
   MFC.updateZoomDisplay();
 
   // ---- alignment bar ----
-  document.querySelectorAll('#align-bar button[data-align]').forEach(b => {
+  document.querySelectorAll('#selection-bar button[data-align]').forEach(b => {
     b.addEventListener('click', () => MFC.align(b.dataset.align));
   });
   document.getElementById('btn-group').addEventListener('click', () => MFC.groupSelection());
   document.getElementById('btn-ungroup').addEventListener('click', () => MFC.ungroupSelection());
+  document.getElementById('layers-show-all').addEventListener('click', () => MFC.setAllLayersVisible(true));
+  document.getElementById('layers-hide-all').addEventListener('click', () => MFC.setAllLayersVisible(false));
 
   // ---- keyboard shortcuts ----
   window.addEventListener('keydown', (e) => {
@@ -478,8 +502,12 @@ window.addEventListener('DOMContentLoaded', async () => {
     else if (e.key.toLowerCase() === 's' && !ctrl) { MFC.setTool('scalebar'); }
     else if (e.key.toLowerCase() === 'r' && !ctrl) { MFC.setTool('shape'); }
     else if (e.key.toLowerCase() === 'p' && !ctrl) { MFC.setTool('path'); }
+    else if (!ctrl && (e.key === '+' || e.key === '=')) { e.preventDefault(); MFC.zoomIn(); }
+    else if (!ctrl && (e.key === '-' || e.key === '_')) { e.preventDefault(); MFC.zoomOut(); }
+    else if (!ctrl && e.key === '0') { MFC.zoomReset(); }
+    else if (!ctrl && e.shiftKey && (e.key === '@' || e.code === 'Digit2')) { e.preventDefault(); MFC.zoomToSelection(); }
     else if (e.key === 'Delete' || e.key === 'Backspace') {
-      const active = MFC.getCanvas().getActiveObjects();
+      const active = MFC.getCanvas().getActiveObjects().filter(o => !o.mfcLocked);
       if (active.length) { active.forEach(o => MFC.getCanvas().remove(o)); MFC.getCanvas().discardActiveObject(); MFC.getCanvas().requestRenderAll(); MFC.pushHistory(); }
     }
     else if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
@@ -503,7 +531,9 @@ function attachColorPalettesToAllInputs() {
   const PASTEL = ['#ffb3ba', '#ffdfba', '#ffffba', '#baffc9', '#bae1ff', '#d5baff', '#e8d5c4', '#d0d0d0'];
   const DARK = ['#8f3049', '#8f5329', '#72621f', '#315f4c', '#275b69', '#3f4e87', '#604a78', '#493d45'];
   const GRAYS = ['#f4f4f4', '#d0d0d0', '#a0a0a0', '#707070', '#484848', '#242424'];
-  const PALETTE = [...NORMAL, ...PASTEL, ...DARK, ...GRAYS];
+  // Pure ImageJ channel colors first, so fluorescence annotations can match LUTs exactly.
+  const IMAGEJ = [['#FF0000', 'Red'], ['#00FF00', 'Green'], ['#0000FF', 'Blue'], ['#FF00FF', 'Magenta'], ['#00FFFF', 'Cyan'], ['#FFFF00', 'Yellow']];
+  const PALETTE = [...IMAGEJ, null, ...NORMAL, ...PASTEL, ...DARK, ...GRAYS];
 
   ['text-color', 'text-bg-color', 'text-border-color', 'shape-stroke-color', 'shape-fill-color', 'path-stroke-color', 'sb-color', 'inset-stroke-color'].forEach(id => {
     const input = document.getElementById(id);
@@ -514,13 +544,16 @@ function attachColorPalettesToAllInputs() {
 function attachColorPalette(input, colors) {
   const row = document.createElement('div');
   row.className = 'color-palette';
-  colors.forEach(c => {
+  colors.forEach(entry => {
+    if (entry === null) { const br = document.createElement('span'); br.className = 'palette-break'; row.appendChild(br); return; }
+    const [c, name] = Array.isArray(entry) ? entry : [entry, ''];
     const b = document.createElement('button');
     b.type = 'button';
     b.style.background = c;
-    b.title = c;
+    b.title = name ? `${name} ${c} (ImageJ)` : c;
+    if (name) b.dataset.imagej = name.toLowerCase();
     b.addEventListener('click', () => {
-      input.value = c;
+      input.value = c.toLowerCase();
       input.dispatchEvent(new Event('input', { bubbles: true }));
       input.dispatchEvent(new Event('change', { bubbles: true }));
     });

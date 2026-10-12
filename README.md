@@ -8,6 +8,24 @@ From the project directory, run `python3 -m http.server 8765 --bind 127.0.0.1` a
 
 The workspace starts empty. Choose **Create figure** or **Open project** to begin; creating a figure shows the document page and enables editing. The right inspector has collapsible sections and brings the active tool or selected object's settings to the top. **Theme** offers light lavender, light sage, dark plum, and dark slate; your choice is remembered in this browser. Color palettes include bright colors, pastels, darker shades, and grays. New shapes and paths start with a yellow stroke.
 
+## Selection bar, locks and navigation
+
+While a figure is open, a fixed-height bar under the top bar shows the selection's X, Y, W, H and rotation, the **Lock position** toggle, and (for two or more objects) align, distribute and group. Selecting objects never moves, opens or closes inspector panels; sections only collapse or expand through their own header toggle or **Collapse all**, and that choice is remembered.
+
+The layers panel has three toggles per row: the eye (show/hide, with **Show all** and **Hide all**), the padlock (layer lock: the object cannot be selected, moved, edited or deleted), and the crosshair (position/size lock: the object cannot be moved, resized or rotated, but channels, colors, contrast and text stay editable). Both locks are saved with the project and survive undo/redo. Align, distribute and grid layout leave locked objects in place, and a multi-selection containing a locked object cannot be dragged or grouped.
+
+Zoom buttons and the `+`, `-` and `0` keys zoom around the selected object, or the view center when nothing is selected; Ctrl+wheel zooms around the selection or the cursor. **Fit selection** (Shift+2) fits the selection in view. Hold Shift while rotating to snap to 45°.
+
+## Text boxes
+
+A text box has its own size, independent of the font size. Set W/H in the selection bar or drag the side and top/bottom handles to resize the box; corner handles scale the text, and the size field always shows the real font size. **Top**, **Middle**, **Bottom** and **Center both** position the text inside the box, in the editor and in SVG/PDF/TIFF export.
+
+## Insets of an exact size
+
+In the Inset panel, enable **Exact outline size** and type a width and height in document pixels, then click an image with the Inset tool to place an outline of exactly that size. The fields keep the size of the last outline drawn or placed, so insets on different images match. **Apply exact size to selected outline** resizes an existing outline, and **Inset magnification** sets the size of new insets relative to their outline.
+
+Exports are named after the project (characters that are invalid in file names are replaced). Color pickers include the pure ImageJ channel colors red, green, blue, magenta, cyan and yellow.
+
 ## Project files and recovery
 
 Current `.mfcproj.zip` files contain `manifest.json`, one editable JSON state per saved version under `versions/`, and one copy of every distinct original import under `sources/`. Save Project updates the current version. Save As creates a child version in a newly selected file and carries the prior history forward.
@@ -62,3 +80,5 @@ script.onload = async () => console.log(await runPathRegressions());
 ```
 
 It verifies progressive drawing, mixed straight and cubic segments, node editing and insertion, corner/smooth conversion, Alt handle separation, closure, arrowheads, project persistence, copy/paste, legacy curve migration, and vector SVG/PDF export.
+
+The UI suite (`tests/ui-fixes-regression.js`, also in the browser runner) covers stable inspector panels, the selection bar, font size and text box sizing, vertical text alignment, 45° rotation snapping, selection-centered zoom, both lock types across tools, undo/redo and loading, visibility icons, exact-size insets, export file names, ImageJ swatches, and opening a project saved by v0.22 (`tests/compat/main-v0.22-project.mfcproj.zip`).

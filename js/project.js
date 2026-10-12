@@ -111,6 +111,9 @@ const MFC_PROJECT = (() => {
     if (json.clipPath) obj.clipPath = await restoreObject(json.clipPath, registry, forExport);
     if (obj.type === 'textbox') MFC.attachTextListeners(obj);
     if (['path','curve','polyline'].includes(obj.mfcShapeKind)) MFC.installPathControls(obj);
+    // Lock flags are derived from mfcLocked/mfcPositionLocked rather than stored, so
+    // loading, undo/redo and paste all end up with the same Fabric lock state.
+    MFC.applyLockState(obj);
     obj.setCoords();
     return obj;
   }
