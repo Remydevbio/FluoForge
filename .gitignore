@@ -1,3 +1,10 @@
 tests/fixtures/
 tests/output/
 __pycache__/
+code_log/
+code_logs/
+*.log
+.env
+.env.*
+!.env.example
+.claude/settings.local.json
